@@ -23,6 +23,9 @@
 #include "control.h"
 #include "microbookii.h"
 
+#define DEBUG 1
+
+
 static struct snd_pcm_hardware microbookii_pcm_hardware = {
 	.info = SNDRV_PCM_INFO_MMAP |
 			SNDRV_PCM_INFO_INTERLEAVED |
@@ -34,9 +37,9 @@ static struct snd_pcm_hardware microbookii_pcm_hardware = {
 	.rate_min	= 44100,
 	.rate_max	= 96000,
 	*/
-	.rates		= SNDRV_PCM_RATE_48000,
-	.rate_min	= 48000,
-	.rate_max	= 48000,
+	.rates		= SNDRV_PCM_RATE_44100,
+	.rate_min	= 44100,
+	.rate_max	= 44100,
 	.channels_min	= 8,
 	.channels_max	= 8,
 	.buffer_bytes_max = ALSA_BUFFER_SIZE,
@@ -69,7 +72,7 @@ static void microbookii_pcm_capture(struct microbookii_substream *sub, struct mi
 				frames_to_bytes(alsa_rt, alsa_rt->buffer_size);
 
 	bytes_per_frame = alsa_rt->frame_bits / 8;
-	src = urb->buffer;
+	src = urb->instance.transfer_buffer;
 
 	for (i = 0; i < USB_N_PACKETS_PER_URB; i++) {
 		frame_count = urb->packets[i].actual_length / bytes_per_frame;
@@ -93,80 +96,6 @@ static void microbookii_pcm_capture(struct microbookii_substream *sub, struct mi
 	}
 }
 
-/* handle incoming URB with captured data */
-static void microbookii_pcm_in_urb_handler(struct urb *usb_urb)
-{
-	struct microbookii_urb *mbii_urb = usb_urb->context;
-	struct microbookii_pcm *pcm = &mbii_urb->mbii->pcm;
-	struct microbookii_substream *stream = mbii_urb->stream;
-	unsigned long flags;
-	int ret, k, period_bytes;
-	struct usb_iso_packet_descriptor *packet;
-
-	if (pcm->panic || stream->state == STREAM_STOPPING)
-		return;
-
-	if (unlikely(usb_urb->status == -ENOENT ||		/* unlinked */
-				usb_urb->status == -ENODEV ||		/* device removed */
-				usb_urb->status == -ECONNRESET ||	/* unlinked */
-				usb_urb->status == -ESHUTDOWN))		/* device disabled */
-	{
-		goto out_fail;
-	}
-
-	if (stream->state == STREAM_STARTING) {
-		stream->wait_cond = true;
-		wake_up(&stream->wait_queue);
-	}
-
-	if (stream->active) {
-		spin_lock_irqsave(&stream->lock, flags);
-
-		/* copy captured data into ALSA buffer */
-		microbookii_pcm_capture(stream, mbii_urb);
-
-		period_bytes = snd_pcm_lib_period_bytes(stream->instance);
-
-		/* do we have enough data for one period? */
-		if (stream->period_off > period_bytes) {
-			stream->period_off %= period_bytes;
-
-			spin_unlock_irqrestore(&stream->lock, flags);
-
-			/* call this only once even if multiple periods are ready */
-			snd_pcm_period_elapsed(stream->instance);
-
-			memset(mbii_urb->buffer, 0, USB_BUFFER_SIZE);
-		} else {
-			spin_unlock_irqrestore(&stream->lock, flags);
-			memset(mbii_urb->buffer, 0, USB_BUFFER_SIZE);
-		}
-	} else {
-		memset(mbii_urb->buffer, 0, USB_BUFFER_SIZE);
-	}
-
-	/* reset URB data */
-	for (k = 0; k < USB_N_PACKETS_PER_URB; k++) {
-		packet = &mbii_urb->packets[k];
-		packet->offset = k * USB_PACKET_OFFSET;
-		packet->length = USB_PACKET_SIZE;
-		packet->actual_length = 0;
-		packet->status = 0;
-	}
-	mbii_urb->instance.number_of_packets = USB_N_PACKETS_PER_URB;
-
-	/* send the URB back to the BCD2000 */
-	ret = usb_submit_urb(&mbii_urb->instance, GFP_ATOMIC);
-	if (ret < 0)
-		goto out_fail;
-
-	return;
-
-out_fail:
-	dev_info(&mbii_urb->mbii->dev->dev, PREFIX "error in in_urb handler");
-	pcm->panic = true;
-}
-
 /* copy audio frame from ALSA buffer into the URB packet */
 static void microbookii_pcm_playback(struct microbookii_substream *sub, struct microbookii_urb *urb)
 {
@@ -182,11 +111,12 @@ static void microbookii_pcm_playback(struct microbookii_substream *sub, struct m
 	src_end = alsa_rt->dma_area +
 				frames_to_bytes(alsa_rt, alsa_rt->buffer_size);
 
-	bytes_per_frame = alsa_rt->frame_bits / 8;
-	dest = urb->buffer;
+	dest = urb->instance.transfer_buffer;
+	
+	bytes_per_frame = frames_to_bytes(alsa_rt, 1);
 
 	for (i = 0; i < USB_N_PACKETS_PER_URB; i++) {
-		frame_count = urb->packets[i].length / bytes_per_frame;
+		frame_count = bytes_to_frames(alsa_rt, urb->packets[i].length);
 
 		for (frame = 0; frame < frame_count; frame++) {
 			memcpy(dest, src, bytes_per_frame);
@@ -204,8 +134,176 @@ static void microbookii_pcm_playback(struct microbookii_substream *sub, struct m
 	}
 }
 
-/* refill empty URB that comes back from the BCD2000 */
-static void microbookii_pcm_out_urb_handler(struct urb *usb_urb)
+static void microbookii_prepare_outbound_urb(struct microbookii_urb *urb) {
+	unsigned long flags;
+	unsigned int period_bytes;
+	
+	struct microbookii_substream *stream = urb->stream;
+
+	spin_lock_irqsave(&stream->lock, flags);
+
+	memset(urb->instance.transfer_buffer, 0, USB_BUFFER_SIZE);
+
+	/* fill URB with data from ALSA */
+	microbookii_pcm_playback(stream, urb);
+
+	period_bytes = snd_pcm_lib_period_bytes(stream->instance);
+
+	/* check if a complete period was written into the URB */
+	if (stream->period_off > period_bytes) {
+		stream->period_off %= period_bytes;
+
+		spin_unlock_irqrestore(&stream->lock, flags);
+
+		snd_pcm_period_elapsed(stream->instance);
+	} else {
+		spin_unlock_irqrestore(&stream->lock, flags);
+	}
+}
+
+/*
+ * Send output urbs that have been prepared previously. URBs are dequeued
+ * from ep->ready_playback_urbs and in case there there aren't any available
+ * or there are no packets that have been prepared, this function does
+ * nothing.
+ *
+ * The reason why the functionality of sending and preparing URBs is separated
+ * is that host controllers don't guarantee the order in which they return
+ * inbound and outbound packets to their submitters.
+ *
+ * This function is only used for implicit feedback endpoints. For endpoints
+ * driven by dedicated sync endpoints, URBs are immediately re-submitted
+ * from their completion handler.
+ */
+static void queue_pending_output_urbs(struct microbookii_substream *stream)
+{
+	struct microbookii_pcm *pcm = snd_pcm_substream_chip(stream->instance);
+	struct microbookii *mbii = pcm->mbii;
+	if (stream->instance->stream != SNDRV_PCM_STREAM_PLAYBACK) {
+		dev_err(&mbii->dev->dev, "Called queue_pending_output_urbs for caputre substream.");
+		return;
+	}
+	
+	while (stream->state == STREAM_RUNNING) {
+
+		unsigned long flags;
+		struct microbookii_usb_packet_info *uninitialized_var(packet);
+		struct microbookii_urb *urb = NULL;
+		int err, i, offset;
+
+		spin_lock_irqsave(&stream->lock, flags);
+		if (stream->next_packet_read_pos != stream->next_packet_write_pos) {
+			packet = stream->next_packet + stream->next_packet_read_pos;
+			stream->next_packet_read_pos++;
+			stream->next_packet_read_pos %= USB_N_URBS;
+
+			/* take URB out of FIFO */
+			if (!list_empty(&stream->ready_playback_urbs))
+				urb = list_first_entry(&stream->ready_playback_urbs,
+					       struct microbookii_urb, ready_list);
+		}
+		spin_unlock_irqrestore(&stream->lock, flags);
+
+		if (urb == NULL)
+			return;
+
+		list_del_init(&urb->ready_list);
+
+		/* copy over the length information */
+		offset = 0;
+		for (i = 0; i < packet->packets; i++) {
+			urb->packets[i].offset = offset;
+			urb->packets[i].length = packet->packet_size[i];
+			urb->packets[i].actual_length = 0;
+			urb->packets[i].status = 0;
+			
+			offset += packet->packet_size[i];
+		}
+		
+		/* fill URB with data from ALSA */
+		microbookii_prepare_outbound_urb(urb);
+		
+		err = usb_submit_urb(&urb->instance, GFP_ATOMIC);
+		if (err < 0)
+			dev_err(&mbii->dev->dev,
+				"Unable to submit urb: %d (urb %p)\n",
+				err, &urb->instance);
+		else
+			set_bit(urb->index, &stream->active_mask);
+	}
+}
+
+/**
+ * microbookii_handle_sync_urb: parse an USB sync packet
+ *
+ * @ep: the endpoint to handle the packet
+ * @sender: the sending endpoint
+ * @urb: the received packet
+ *
+ * This function is called from the context of an endpoint that received
+ * the packet and is used to let another endpoint object handle the payload.
+ */
+void microbookii_handle_sync_urb(struct microbookii_pcm *pcm, 
+								 const struct urb *usb_urb)
+{
+	unsigned long flags;
+
+	/*
+	 * In case the endpoint is operating in implicit feedback mode, prepare
+	 * a new outbound URB that has the same layout as the received packet
+	 * and add it to the list of pending urbs. queue_pending_output_urbs()
+	 * will take care of them later.
+	 */
+	 
+	/* implicit feedback */
+	int i, bytes = 0;
+	struct microbookii_urb *urb;
+	struct microbookii_usb_packet_info *out_packet;
+
+	urb = usb_urb->context;
+
+	/* Count overall packet size */
+	for (i = 0; i < USB_N_PACKETS_PER_URB; i++)
+		if (usb_urb->iso_frame_desc[i].status == 0)
+			bytes += usb_urb->iso_frame_desc[i].actual_length;
+
+	/*
+	 * skip empty packets. At least M-Audio's Fast Track Ultra stops
+	 * streaming once it received a 0-byte OUT URB
+	 */
+	if (bytes == 0)
+		return;
+
+	spin_lock_irqsave(&pcm->playback.lock, flags);
+	out_packet = pcm->playback.next_packet + pcm->playback.next_packet_write_pos;
+
+	/*
+	 * Iterate through the inbound packet and prepare the lengths
+	 * for the output packet. The OUT packet we are about to send
+	 * will have the same amount of payload bytes per stride as the
+	 * IN packet we just received. Since the actual size is scaled
+	 * by the stride, use the sender stride to calculate the length
+	 * in case the number of channels differ between the implicitly
+	 * fed-back endpoint and the synchronizing endpoint.
+	 */
+		 
+	out_packet->packets = USB_N_PACKETS_PER_URB;
+	for (i = 0; i < USB_N_PACKETS_PER_URB; i++) {
+		if (usb_urb->iso_frame_desc[i].status == 0)
+			out_packet->packet_size[i] =
+				usb_urb->iso_frame_desc[i].actual_length / 6 * 8;
+		else
+			out_packet->packet_size[i] = 0;
+	}
+
+	pcm->playback.next_packet_write_pos++;
+	pcm->playback.next_packet_write_pos %= USB_N_URBS;
+	spin_unlock_irqrestore(&pcm->playback.lock, flags);
+	queue_pending_output_urbs(&pcm->playback);
+}
+
+/* handle incoming URB with captured data */
+static void microbookii_pcm_urb_handler(struct urb *usb_urb)
 {
 	struct microbookii_urb *mbii_urb = usb_urb->context;
 	struct microbookii_pcm *pcm = &mbii_urb->mbii->pcm;
@@ -214,14 +312,14 @@ static void microbookii_pcm_out_urb_handler(struct urb *usb_urb)
 	int ret, k, period_bytes;
 	struct usb_iso_packet_descriptor *packet;
 
-
-	if (pcm->panic || stream->state == STREAM_STOPPING)
+	if (pcm->panic || stream->state == STREAM_STOPPING) {
 		return;
+	}
 
 	if (unlikely(usb_urb->status == -ENOENT ||		/* unlinked */
-		usb_urb->status == -ENODEV ||		/* device removed */
-		usb_urb->status == -ECONNRESET ||	/* unlinked */
-		usb_urb->status == -ESHUTDOWN))		/* device disabled */
+				usb_urb->status == -ENODEV ||		/* device removed */
+				usb_urb->status == -ECONNRESET ||	/* unlinked */
+				usb_urb->status == -ESHUTDOWN))		/* device disabled */
 	{
 		goto out_fail;
 	}
@@ -230,28 +328,43 @@ static void microbookii_pcm_out_urb_handler(struct urb *usb_urb)
 		stream->wait_cond = true;
 		wake_up(&stream->wait_queue);
 	}
-
-	if (stream->active) {
+	
+	if (usb_pipeout(usb_urb->pipe)) {
 		spin_lock_irqsave(&stream->lock, flags);
-
-		memset(mbii_urb->buffer, 0, USB_BUFFER_SIZE);
-
-		/* fill URB with data from ALSA */
-		microbookii_pcm_playback(stream, mbii_urb);
-
-		period_bytes = snd_pcm_lib_period_bytes(stream->instance);
-
-		/* check if a complete period was written into the URB */
-		if (stream->period_off > period_bytes) {
-			stream->period_off %= period_bytes;
-
-			spin_unlock_irqrestore(&stream->lock, flags);
-
-			snd_pcm_period_elapsed(stream->instance);
-		} else {
-			spin_unlock_irqrestore(&stream->lock, flags);
+		list_add_tail(&mbii_urb->ready_list, &stream->ready_playback_urbs);
+		spin_unlock_irqrestore(&stream->lock, flags);
+		
+		clear_bit(mbii_urb->index, &stream->active_mask);
+		
+		queue_pending_output_urbs(stream);
+	}
+	else {
+		if (pcm->playback.active) {
+			microbookii_handle_sync_urb(pcm, usb_urb);
 		}
+		if (stream->active) {
+			spin_lock_irqsave(&stream->lock, flags);
 
+			/* copy captured data into ALSA buffer */
+			microbookii_pcm_capture(stream, mbii_urb);
+
+			period_bytes = snd_pcm_lib_period_bytes(stream->instance);
+
+			/* do we have enough data for one period? */
+			if (stream->period_off > period_bytes) {
+				stream->period_off %= period_bytes;
+
+				spin_unlock_irqrestore(&stream->lock, flags);
+
+				/* call this only once even if multiple periods are ready */
+				snd_pcm_period_elapsed(stream->instance);
+			} else {
+				spin_unlock_irqrestore(&stream->lock, flags);
+			}
+		}
+		memset(mbii_urb->instance.transfer_buffer, 0, USB_BUFFER_SIZE);
+
+		/* reset URB data */
 		for (k = 0; k < USB_N_PACKETS_PER_URB; k++) {
 			packet = &mbii_urb->packets[k];
 			packet->offset = k * USB_PACKET_OFFSET;
@@ -261,17 +374,18 @@ static void microbookii_pcm_out_urb_handler(struct urb *usb_urb)
 		}
 		mbii_urb->instance.number_of_packets = USB_N_PACKETS_PER_URB;
 
+		/* send the URB back to the MicroBook */
 		ret = usb_submit_urb(&mbii_urb->instance, GFP_ATOMIC);
 		if (ret < 0)
 			goto out_fail;
 	}
-
 	return;
 
 out_fail:
-	dev_info(&mbii_urb->mbii->dev->dev, PREFIX "error in out_urb handler");
+	dev_info(&mbii_urb->mbii->dev->dev, PREFIX "error in urb handler");
 	pcm->panic = true;
 }
+
 
 static void microbookii_pcm_stream_stop(struct microbookii_pcm *pcm, struct microbookii_substream *stream)
 {
@@ -367,32 +481,35 @@ static int microbookii_pcm_stream_start(struct microbookii_pcm *pcm, struct micr
 		pcm->panic = false;
 
 		stream->state = STREAM_STARTING;
+		
+		INIT_LIST_HEAD(&stream->ready_playback_urbs);
 
 		/* initialize data of each URB */
 		for (i = 0; i < USB_N_URBS; i++) {
-			for (k = 0; k < USB_N_PACKETS_PER_URB; k++) {
-				packet = &stream->urbs[i].packets[k];
-				packet->offset = k * USB_PACKET_OFFSET;
-				packet->length = USB_PACKET_SIZE;
-				packet->actual_length = 0;
-				packet->status = 0;
-			}
-
 			/* immediately send data with the first audio out URB */
-			if (stream->instance == SNDRV_PCM_STREAM_PLAYBACK) {
-				microbookii_pcm_playback(stream, &stream->urbs[i]);
-			}
-
-			ret = usb_submit_urb(&stream->urbs[i].instance, GFP_ATOMIC);
-			if (ret) {
-				microbookii_pcm_stream_stop(pcm, stream);
-				dev_err(&pcm->mbii->dev->dev, PREFIX
-												"could not submit urb, Error: %i\n", ret);
-				return ret;
+			if (stream->instance->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+				list_add_tail(&stream->urbs[i].ready_list, &stream->ready_playback_urbs);
+			} else {
+				for (k = 0; k < USB_N_PACKETS_PER_URB; k++) {
+					packet = &stream->urbs[i].packets[k];
+					packet->offset = k * USB_PACKET_OFFSET;
+					packet->length = USB_PACKET_SIZE;
+					packet->actual_length = 0;
+					packet->status = 0;
+				}
+				
+				ret = usb_submit_urb(&stream->urbs[i].instance, GFP_ATOMIC);
+				if (ret) {
+					microbookii_pcm_stream_stop(pcm, stream);
+					dev_err(&pcm->mbii->dev->dev, PREFIX
+													"could not submit urb, Error: %i\n", ret);
+					return ret;
+				}
 			}
 		}
+		stream->state = STREAM_RUNNING;
 
-		/* wait for first out urb to return (sent in in urb handler) */
+		/* wait for first out urb to return (sent in in urb handler) */ /*
 		wait_event_timeout(stream->wait_queue,
 						   stream->wait_cond, HZ);
 		if (stream->wait_cond) {
@@ -403,6 +520,7 @@ static int microbookii_pcm_stream_start(struct microbookii_pcm *pcm, struct micr
 			microbookii_pcm_stream_stop(pcm, stream);
 			return -EIO;
 		}
+		*/
 	}
 	return 0;
 }
@@ -538,11 +656,10 @@ static int microbookii_pcm_init_urb(struct microbookii_urb *urb,
 	urb->mbii = mbii;
 	usb_init_urb(&urb->instance);
 
-	urb->buffer = kzalloc(USB_BUFFER_SIZE, GFP_KERNEL);
-	if (!urb->buffer)
+	urb->instance.transfer_buffer = kzalloc(USB_BUFFER_SIZE, GFP_KERNEL);
+	if (!urb->instance.transfer_buffer)
 		return -ENOMEM;
 
-	urb->instance.transfer_buffer = urb->buffer;
 	urb->instance.transfer_buffer_length = USB_BUFFER_SIZE;
 	urb->instance.dev = mbii->dev;
 	urb->instance.pipe = in ? usb_rcvisocpipe(mbii->dev, ep)
@@ -551,6 +668,8 @@ static int microbookii_pcm_init_urb(struct microbookii_urb *urb,
 	urb->instance.complete = handler;
 	urb->instance.context = urb;
 	urb->instance.number_of_packets = USB_N_PACKETS_PER_URB;
+	
+	INIT_LIST_HEAD(&urb->ready_list);
 
 	return 0;
 }
@@ -558,10 +677,14 @@ static int microbookii_pcm_init_urb(struct microbookii_urb *urb,
 static void microbookii_pcm_destroy(struct microbookii *mbii)
 {
 	int i;
+	struct urb *urb;
 
 	for (i = 0; i < USB_N_URBS; i++) {
-		kfree(mbii->pcm.playback.urbs[i].buffer);
-		kfree(mbii->pcm.capture.urbs[i].buffer);
+		urb = &mbii->pcm.playback.urbs[i].instance;
+		kfree(urb->transfer_buffer);
+		
+		urb = &mbii->pcm.capture.urbs[i].instance;
+		kfree(urb->transfer_buffer);
 	}
 }
 
@@ -580,10 +703,12 @@ int microbookii_init_stream(struct microbookii *mbii,struct microbookii_substrea
 
 	init_waitqueue_head(&stream->wait_queue);
 	mutex_init(&stream->mutex);
+	
+	INIT_LIST_HEAD(&stream->ready_playback_urbs);
 
 	for (i=0; i<USB_N_URBS; i++) {
 		ret = microbookii_pcm_init_urb(&stream->urbs[i], mbii, in, in? 0x84 : 0x3,
-							 in? microbookii_pcm_in_urb_handler : microbookii_pcm_out_urb_handler);
+							 microbookii_pcm_urb_handler);
 		if (ret) {
 			dev_err(&mbii->dev->dev, PREFIX
 					"%s: urb init failed, ret=%d: ",
@@ -608,10 +733,9 @@ int microbookii_init_audio(struct microbookii *mbii)
 	spin_lock_init(&pcm->capture.lock);
 
 	microbookii_init_stream(mbii, &pcm->playback, 0);
-	/* microbookii_init_stream(mbii, &pcm->capture, 1); */
+	microbookii_init_stream(mbii, &pcm->capture, 1);
 
-	// 1 playback stream 0 capture streams for now
-	ret = snd_pcm_new(mbii->card, DEVICENAME, 0, 1, 0, &pcm->instance);
+	ret = snd_pcm_new(mbii->card, DEVICENAME, 0, 1, 1, &pcm->instance);
 	if (ret < 0) {
 		dev_err(&mbii->dev->dev, PREFIX
 			"%s: snd_pcm_new() failed, ret=%d: ",
@@ -627,7 +751,7 @@ int microbookii_init_audio(struct microbookii *mbii)
 		sizeof(microbookii_pcm_hardware));
 
 	snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_PLAYBACK, &microbookii_ops);
-	/* snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_CAPTURE, &microbookii_ops); */
+	snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_CAPTURE, &microbookii_ops);
 
 	return 0;
 }

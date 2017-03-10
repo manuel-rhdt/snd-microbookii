@@ -16,6 +16,8 @@
 struct microbookii;
 
 struct microbookii_urb {
+	int index;
+
 	struct microbookii *mbii;
 	struct microbookii_substream *stream;
 
@@ -23,7 +25,9 @@ struct microbookii_urb {
 	struct urb instance;
 	struct usb_iso_packet_descriptor packets[USB_N_PACKETS_PER_URB];
 	/* END DO NOT SEPARATE */
-	u8 *buffer;
+	
+	int packet_size[USB_N_PACKETS_PER_URB]; /* size of packets for next submission */
+	struct list_head ready_list;
 };
 
 struct microbookii_substream {
@@ -35,6 +39,14 @@ struct microbookii_substream {
 	snd_pcm_uframes_t period_off; /* current position in current period */
 
 	struct microbookii_urb urbs[USB_N_URBS];
+	struct list_head ready_playback_urbs;
+	long unsigned int active_mask;
+	
+	struct microbookii_usb_packet_info {
+		uint32_t packet_size[USB_N_PACKETS_PER_URB];
+		int packets;
+	} next_packet[USB_N_URBS];
+	int next_packet_read_pos, next_packet_write_pos;
 
 	spinlock_t lock;
 	struct mutex mutex;
@@ -48,8 +60,9 @@ struct microbookii_pcm {
 	struct snd_pcm *instance;
 	struct snd_pcm_hardware pcm_info;
 
-	struct microbookii_substream playback;
 	struct microbookii_substream capture;
+	struct microbookii_substream playback;
+	
 	bool panic; /* if set driver won't do anymore pcm on device */
 };
 
