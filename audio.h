@@ -4,18 +4,19 @@
 #include <sound/pcm.h>
 
 #define USB_N_URBS 4
-#define USB_N_PACKETS_PER_URB 16
-#define USB_PACKET_SIZE 360
+#define USB_N_PACKETS_PER_URB 10
+#define USB_PACKET_OFFSET 144
+#define USB_PACKET_SIZE 144
 #define USB_BUFFER_SIZE (USB_PACKET_SIZE * USB_N_PACKETS_PER_URB)
 
-#define BYTES_PER_PERIOD 3528
+#define BYTES_PER_PERIOD (24 * 16)
 #define PERIODS_MAX 128
 #define ALSA_BUFFER_SIZE (BYTES_PER_PERIOD * PERIODS_MAX)
 
 struct microbookii;
 
 struct microbookii_urb {
-	struct microbookii *bcd2k;
+	struct microbookii *mbii;
 	struct microbookii_substream *stream;
 
 	/* BEGIN DO NOT SEPARATE */
@@ -42,7 +43,7 @@ struct microbookii_substream {
 };
 
 struct microbookii_pcm {
-	struct microbookii *bcd2k;
+	struct microbookii *mbii;
 
 	struct snd_pcm *instance;
 	struct snd_pcm_hardware pcm_info;
@@ -52,7 +53,7 @@ struct microbookii_pcm {
 	bool panic; /* if set driver won't do anymore pcm on device */
 };
 
-int microbookii_init_audio(struct microbookii *bcd2k);
-void microbookii_free_audio(struct microbookii *bcd2k);
+int microbookii_init_audio(struct microbookii *mbii);
+void microbookii_free_audio(struct microbookii *mbii);
 
 #endif

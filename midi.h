@@ -11,7 +11,7 @@ struct microbookii;
 #define MIDI_BUFSIZE 64
 
 struct microbookii_midi {
-	struct microbookii *bcd2k;
+	struct microbookii *mbii;
 
 	int out_active;
 	struct snd_rawmidi *rmidi;
@@ -27,7 +27,7 @@ struct microbookii_midi {
 	struct usb_anchor anchor;
 };
 
-int microbookii_init_midi(struct microbookii *bcd2k);
-void microbookii_free_midi(struct microbookii *bcd2k);
+int microbookii_init_midi(struct microbookii *mbii);
+void microbookii_free_midi(struct microbookii *mbii);
 
 #endif

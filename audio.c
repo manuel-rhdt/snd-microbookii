@@ -20,6 +20,7 @@
 #include <sound/pcm_params.h>
 
 #include "audio.h"
+#include "control.h"
 #include "microbookii.h"
 
 static struct snd_pcm_hardware microbookii_pcm_hardware = {
@@ -27,12 +28,17 @@ static struct snd_pcm_hardware microbookii_pcm_hardware = {
 			SNDRV_PCM_INFO_INTERLEAVED |
 			SNDRV_PCM_INFO_BATCH |
 			SNDRV_PCM_INFO_BLOCK_TRANSFER,
-	.formats	= SNDRV_PCM_FMTBIT_S16_LE,
-	.rates		= SNDRV_PCM_RATE_44100,
+	.formats	= SNDRV_PCM_FMTBIT_S24_3BE,
+	/*
+	.rates		= SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_96000,
 	.rate_min	= 44100,
-	.rate_max	= 44100,
-	.channels_min	= 4,
-	.channels_max	= 4,
+	.rate_max	= 96000,
+	*/
+	.rates		= SNDRV_PCM_RATE_48000,
+	.rate_min	= 48000,
+	.rate_max	= 48000,
+	.channels_min	= 8,
+	.channels_max	= 8,
 	.buffer_bytes_max = ALSA_BUFFER_SIZE,
 	.period_bytes_min = BYTES_PER_PERIOD,
 	.period_bytes_max = ALSA_BUFFER_SIZE,
@@ -90,9 +96,9 @@ static void microbookii_pcm_capture(struct microbookii_substream *sub, struct mi
 /* handle incoming URB with captured data */
 static void microbookii_pcm_in_urb_handler(struct urb *usb_urb)
 {
-	struct microbookii_urb *bcd2k_urb = usb_urb->context;
-	struct microbookii_pcm *pcm = &bcd2k_urb->bcd2k->pcm;
-	struct microbookii_substream *stream = bcd2k_urb->stream;
+	struct microbookii_urb *mbii_urb = usb_urb->context;
+	struct microbookii_pcm *pcm = &mbii_urb->mbii->pcm;
+	struct microbookii_substream *stream = mbii_urb->stream;
 	unsigned long flags;
 	int ret, k, period_bytes;
 	struct usb_iso_packet_descriptor *packet;
@@ -117,7 +123,7 @@ static void microbookii_pcm_in_urb_handler(struct urb *usb_urb)
 		spin_lock_irqsave(&stream->lock, flags);
 
 		/* copy captured data into ALSA buffer */
-		microbookii_pcm_capture(stream, bcd2k_urb);
+		microbookii_pcm_capture(stream, mbii_urb);
 
 		period_bytes = snd_pcm_lib_period_bytes(stream->instance);
 
@@ -130,34 +136,34 @@ static void microbookii_pcm_in_urb_handler(struct urb *usb_urb)
 			/* call this only once even if multiple periods are ready */
 			snd_pcm_period_elapsed(stream->instance);
 
-			memset(bcd2k_urb->buffer, 0, USB_BUFFER_SIZE);
+			memset(mbii_urb->buffer, 0, USB_BUFFER_SIZE);
 		} else {
 			spin_unlock_irqrestore(&stream->lock, flags);
-			memset(bcd2k_urb->buffer, 0, USB_BUFFER_SIZE);
+			memset(mbii_urb->buffer, 0, USB_BUFFER_SIZE);
 		}
 	} else {
-		memset(bcd2k_urb->buffer, 0, USB_BUFFER_SIZE);
+		memset(mbii_urb->buffer, 0, USB_BUFFER_SIZE);
 	}
 
 	/* reset URB data */
 	for (k = 0; k < USB_N_PACKETS_PER_URB; k++) {
-		packet = &bcd2k_urb->packets[k];
-		packet->offset = k * USB_PACKET_SIZE;
+		packet = &mbii_urb->packets[k];
+		packet->offset = k * USB_PACKET_OFFSET;
 		packet->length = USB_PACKET_SIZE;
 		packet->actual_length = 0;
 		packet->status = 0;
 	}
-	bcd2k_urb->instance.number_of_packets = USB_N_PACKETS_PER_URB;
+	mbii_urb->instance.number_of_packets = USB_N_PACKETS_PER_URB;
 
 	/* send the URB back to the BCD2000 */
-	ret = usb_submit_urb(&bcd2k_urb->instance, GFP_ATOMIC);
+	ret = usb_submit_urb(&mbii_urb->instance, GFP_ATOMIC);
 	if (ret < 0)
 		goto out_fail;
 
 	return;
 
 out_fail:
-	dev_info(&bcd2k_urb->bcd2k->dev->dev, PREFIX "error in in_urb handler");
+	dev_info(&mbii_urb->mbii->dev->dev, PREFIX "error in in_urb handler");
 	pcm->panic = true;
 }
 
@@ -201,9 +207,9 @@ static void microbookii_pcm_playback(struct microbookii_substream *sub, struct m
 /* refill empty URB that comes back from the BCD2000 */
 static void microbookii_pcm_out_urb_handler(struct urb *usb_urb)
 {
-	struct microbookii_urb *bcd2k_urb = usb_urb->context;
-	struct microbookii_pcm *pcm = &bcd2k_urb->bcd2k->pcm;
-	struct microbookii_substream *stream = bcd2k_urb->stream;
+	struct microbookii_urb *mbii_urb = usb_urb->context;
+	struct microbookii_pcm *pcm = &mbii_urb->mbii->pcm;
+	struct microbookii_substream *stream = mbii_urb->stream;
 	unsigned long flags;
 	int ret, k, period_bytes;
 	struct usb_iso_packet_descriptor *packet;
@@ -228,10 +234,10 @@ static void microbookii_pcm_out_urb_handler(struct urb *usb_urb)
 	if (stream->active) {
 		spin_lock_irqsave(&stream->lock, flags);
 
-		memset(bcd2k_urb->buffer, 0, USB_BUFFER_SIZE);
+		memset(mbii_urb->buffer, 0, USB_BUFFER_SIZE);
 
 		/* fill URB with data from ALSA */
-		microbookii_pcm_playback(stream, bcd2k_urb);
+		microbookii_pcm_playback(stream, mbii_urb);
 
 		period_bytes = snd_pcm_lib_period_bytes(stream->instance);
 
@@ -247,15 +253,15 @@ static void microbookii_pcm_out_urb_handler(struct urb *usb_urb)
 		}
 
 		for (k = 0; k < USB_N_PACKETS_PER_URB; k++) {
-			packet = &bcd2k_urb->packets[k];
-			packet->offset = k * USB_PACKET_SIZE;
+			packet = &mbii_urb->packets[k];
+			packet->offset = k * USB_PACKET_OFFSET;
 			packet->length = USB_PACKET_SIZE;
 			packet->actual_length = 0;
 			packet->status = 0;
 		}
-		bcd2k_urb->instance.number_of_packets = USB_N_PACKETS_PER_URB;
+		mbii_urb->instance.number_of_packets = USB_N_PACKETS_PER_URB;
 
-		ret = usb_submit_urb(&bcd2k_urb->instance, GFP_ATOMIC);
+		ret = usb_submit_urb(&mbii_urb->instance, GFP_ATOMIC);
 		if (ret < 0)
 			goto out_fail;
 	}
@@ -263,7 +269,7 @@ static void microbookii_pcm_out_urb_handler(struct urb *usb_urb)
 	return;
 
 out_fail:
-	dev_info(&bcd2k_urb->bcd2k->dev->dev, PREFIX "error in out_urb handler");
+	dev_info(&mbii_urb->mbii->dev->dev, PREFIX "error in out_urb handler");
 	pcm->panic = true;
 }
 
@@ -298,7 +304,7 @@ static int microbookii_substream_open(struct snd_pcm_substream *substream)
 		stream = &pcm->capture;
 
 	if (!stream) {
-		dev_err(&pcm->bcd2k->dev->dev, PREFIX "invalid stream type\n");
+		dev_err(&pcm->mbii->dev->dev, PREFIX "invalid stream type\n");
 		return -EINVAL;
 	}
 
@@ -366,7 +372,7 @@ static int microbookii_pcm_stream_start(struct microbookii_pcm *pcm, struct micr
 		for (i = 0; i < USB_N_URBS; i++) {
 			for (k = 0; k < USB_N_PACKETS_PER_URB; k++) {
 				packet = &stream->urbs[i].packets[k];
-				packet->offset = k * USB_PACKET_SIZE;
+				packet->offset = k * USB_PACKET_OFFSET;
 				packet->length = USB_PACKET_SIZE;
 				packet->actual_length = 0;
 				packet->status = 0;
@@ -380,6 +386,8 @@ static int microbookii_pcm_stream_start(struct microbookii_pcm *pcm, struct micr
 			ret = usb_submit_urb(&stream->urbs[i].instance, GFP_ATOMIC);
 			if (ret) {
 				microbookii_pcm_stream_stop(pcm, stream);
+				dev_err(&pcm->mbii->dev->dev, PREFIX
+												"could not submit urb, Error: %i\n", ret);
 				return ret;
 			}
 		}
@@ -388,7 +396,7 @@ static int microbookii_pcm_stream_start(struct microbookii_pcm *pcm, struct micr
 		wait_event_timeout(stream->wait_queue,
 						   stream->wait_cond, HZ);
 		if (stream->wait_cond) {
-			dev_dbg(&pcm->bcd2k->dev->dev, PREFIX
+			dev_dbg(&pcm->mbii->dev->dev, PREFIX
 					"%s: stream is running wakeup event\n", __func__);
 			stream->state = STREAM_RUNNING;
 		} else {
@@ -401,9 +409,10 @@ static int microbookii_pcm_stream_start(struct microbookii_pcm *pcm, struct micr
 
 static int microbookii_pcm_prepare(struct snd_pcm_substream *substream)
 {
-	struct microbookii_pcm *pcm = snd_pcm_substream_chip(substream);
 	int ret;
+	struct microbookii_pcm *pcm = snd_pcm_substream_chip(substream);
 	struct microbookii_substream *stream = NULL;
+	struct snd_pcm_runtime *runtime = substream->runtime;
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 		stream = &pcm->playback;
@@ -415,7 +424,20 @@ static int microbookii_pcm_prepare(struct snd_pcm_substream *substream)
 
 	if (!stream)
 		return -ENODEV;
-
+		
+	ret = microbookii_set_rate(pcm->mbii, runtime->rate);
+	if (ret < 0) {
+		dev_err(&pcm->mbii->dev->dev, PREFIX
+					"could not set rate\n");
+		return ret;
+	}
+	ret = microbookii_poll_device_ready(pcm->mbii);
+	if (ret < 0) {
+		dev_err(&pcm->mbii->dev->dev, PREFIX
+					"could not check if device ready\n");
+		return ret;
+	}
+	
 	mutex_lock(&stream->mutex);
 	stream->dma_off = 0;
 	stream->period_off = 0;
@@ -424,7 +446,7 @@ static int microbookii_pcm_prepare(struct snd_pcm_substream *substream)
 		ret = microbookii_pcm_stream_start(pcm, stream);
 		if (ret) {
 			mutex_unlock(&stream->mutex);
-			dev_err(&pcm->bcd2k->dev->dev, PREFIX
+			dev_err(&pcm->mbii->dev->dev, PREFIX
 					"could not start pcm stream\n");
 			return ret;
 		}
@@ -509,11 +531,11 @@ static struct snd_pcm_ops microbookii_ops = {
 };
 
 static int microbookii_pcm_init_urb(struct microbookii_urb *urb,
-							struct microbookii *bcd2k,
+							struct microbookii *mbii,
 							char in, unsigned int ep,
 							void (*handler)(struct urb *))
 {
-	urb->bcd2k = bcd2k;
+	urb->mbii = mbii;
 	usb_init_urb(&urb->instance);
 
 	urb->buffer = kzalloc(USB_BUFFER_SIZE, GFP_KERNEL);
@@ -522,9 +544,9 @@ static int microbookii_pcm_init_urb(struct microbookii_urb *urb,
 
 	urb->instance.transfer_buffer = urb->buffer;
 	urb->instance.transfer_buffer_length = USB_BUFFER_SIZE;
-	urb->instance.dev = bcd2k->dev;
-	urb->instance.pipe = in ? usb_rcvisocpipe(bcd2k->dev, ep)
-							: usb_sndisocpipe(bcd2k->dev, ep);
+	urb->instance.dev = mbii->dev;
+	urb->instance.pipe = in ? usb_rcvisocpipe(mbii->dev, ep)
+							: usb_sndisocpipe(mbii->dev, ep);
 	urb->instance.interval = 1;
 	urb->instance.complete = handler;
 	urb->instance.context = urb;
@@ -533,24 +555,24 @@ static int microbookii_pcm_init_urb(struct microbookii_urb *urb,
 	return 0;
 }
 
-static void microbookii_pcm_destroy(struct microbookii *bcd2k)
+static void microbookii_pcm_destroy(struct microbookii *mbii)
 {
 	int i;
 
 	for (i = 0; i < USB_N_URBS; i++) {
-		kfree(bcd2k->pcm.playback.urbs[i].buffer);
-		kfree(bcd2k->pcm.capture.urbs[i].buffer);
+		kfree(mbii->pcm.playback.urbs[i].buffer);
+		kfree(mbii->pcm.capture.urbs[i].buffer);
 	}
 }
 
 static void microbookii_pcm_free(struct snd_pcm *pcm)
 {
-	struct microbookii_pcm *bcd2k_pcm = pcm->private_data;
-	if (bcd2k_pcm)
-		microbookii_pcm_destroy(bcd2k_pcm->bcd2k);
+	struct microbookii_pcm *mbii_pcm = pcm->private_data;
+	if (mbii_pcm)
+		microbookii_pcm_destroy(mbii_pcm->mbii);
 }
 
-int microbookii_init_stream(struct microbookii *bcd2k,struct microbookii_substream *stream, bool in)
+int microbookii_init_stream(struct microbookii *mbii,struct microbookii_substream *stream, bool in)
 {
 	int i, ret;
 
@@ -560,10 +582,10 @@ int microbookii_init_stream(struct microbookii *bcd2k,struct microbookii_substre
 	mutex_init(&stream->mutex);
 
 	for (i=0; i<USB_N_URBS; i++) {
-		ret = microbookii_pcm_init_urb(&stream->urbs[i], bcd2k, in, in? 0x83 : 0x2,
+		ret = microbookii_pcm_init_urb(&stream->urbs[i], mbii, in, in? 0x84 : 0x3,
 							 in? microbookii_pcm_in_urb_handler : microbookii_pcm_out_urb_handler);
 		if (ret) {
-			dev_err(&bcd2k->dev->dev, PREFIX
+			dev_err(&mbii->dev->dev, PREFIX
 					"%s: urb init failed, ret=%d: ",
 					__func__, ret);
 			return ret;
@@ -574,23 +596,24 @@ int microbookii_init_stream(struct microbookii *bcd2k,struct microbookii_substre
 	return 0;
 }
 
-int microbookii_init_audio(struct microbookii *bcd2k)
+int microbookii_init_audio(struct microbookii *mbii)
 {
 	int ret;
 	struct microbookii_pcm * pcm;
 
-	pcm = &bcd2k->pcm;
-	pcm->bcd2k = bcd2k;
+	pcm = &mbii->pcm;
+	pcm->mbii = mbii;
 
 	spin_lock_init(&pcm->playback.lock);
 	spin_lock_init(&pcm->capture.lock);
 
-	microbookii_init_stream(bcd2k, &pcm->playback, 0);
-	microbookii_init_stream(bcd2k, &pcm->capture, 1);
+	microbookii_init_stream(mbii, &pcm->playback, 0);
+	/* microbookii_init_stream(mbii, &pcm->capture, 1); */
 
-	ret = snd_pcm_new(bcd2k->card, DEVICENAME, 0, 1, 1, &pcm->instance);
+	// 1 playback stream 0 capture streams for now
+	ret = snd_pcm_new(mbii->card, DEVICENAME, 0, 1, 0, &pcm->instance);
 	if (ret < 0) {
-		dev_err(&bcd2k->dev->dev, PREFIX
+		dev_err(&mbii->dev->dev, PREFIX
 			"%s: snd_pcm_new() failed, ret=%d: ",
 			__func__, ret);
 		return ret;
@@ -604,11 +627,11 @@ int microbookii_init_audio(struct microbookii *bcd2k)
 		sizeof(microbookii_pcm_hardware));
 
 	snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_PLAYBACK, &microbookii_ops);
-	snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_CAPTURE, &microbookii_ops);
+	/* snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_CAPTURE, &microbookii_ops); */
 
 	return 0;
 }
 
-void microbookii_free_audio(struct microbookii *bcd2k)
+void microbookii_free_audio(struct microbookii *mbii)
 {
 }

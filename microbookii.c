@@ -1,5 +1,5 @@
 /*
- * Behringer BCD2000 driver
+ * MOTU MicroBook II driver
  *
  *   Copyright (C) 2014 Mario Kicherer (dev@kicherer.org)
  *
@@ -22,6 +22,7 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/bitmap.h>
+#include <linux/delay.h>
 
 #include "microbookii.h"
 #include "midi.h"
@@ -48,35 +49,36 @@ void microbookii_dump_buffer(const char *prefix, const char *buf, int len)
 			buf, len, false);
 }
 #else
-void microbookii_dump_buffer(const char *prefix, const char *buf, int len) {}
+void microbookii_dump_buffer(const char *prefix, const char *buf, int len) {
+	print_hex_dump(KERN_ALERT, prefix,
+			DUMP_PREFIX_NONE, 16, 1,
+			buf, len, false);
+}
 #endif
 
 static void microbookii_disconnect(struct usb_interface *interface)
 {
-	struct microbookii *bcd2k = usb_get_intfdata(interface);
+	struct microbookii *mbii = usb_get_intfdata(interface);
 
-	if (!bcd2k)
+	if (!mbii)
 		return;
 
 	mutex_lock(&devices_mutex);
-
+	
 	/* make sure that userspace cannot create new requests */
-	snd_card_disconnect(bcd2k->card);
+	snd_card_disconnect(mbii->card);
 
-	microbookii_free_control(bcd2k);
+	microbookii_free_control(mbii);
+	microbookii_free_audio(mbii);
 
-	microbookii_free_audio(bcd2k);
-
-	microbookii_free_midi(bcd2k);
-
-	if (bcd2k->intf) {
-		usb_set_intfdata(bcd2k->intf, NULL);
-		bcd2k->intf = NULL;
+	if (mbii->intf) {
+		usb_set_intfdata(mbii->intf, NULL);
+		mbii->intf = NULL;
 	}
 
-	clear_bit(bcd2k->card_index, devices_used);
+	clear_bit(mbii->card_index, devices_used);
 
-	snd_card_free_when_closed(bcd2k->card);
+	snd_card_free_when_closed(mbii->card);
 
 	mutex_unlock(&devices_mutex);
 }
@@ -85,10 +87,11 @@ static int microbookii_probe(struct usb_interface *interface,
 				const struct usb_device_id *usb_id)
 {
 	struct snd_card *card;
-	struct microbookii *bcd2k;
+	struct microbookii *mbii;
 	unsigned int card_index;
 	char usb_path[32];
 	int err;
+	
 
 	mutex_lock(&devices_mutex);
 
@@ -103,55 +106,62 @@ static int microbookii_probe(struct usb_interface *interface,
 
 	#if LINUX_VERSION_CODE < KERNEL_VERSION(3,15,0)
 	err = snd_card_create(index[card_index], id[card_index], THIS_MODULE,
-			sizeof(*bcd2k), &card);
+			sizeof(*mbii), &card);
 	#else
 	err = snd_card_new(&interface->dev, index[card_index], id[card_index],
-			THIS_MODULE, sizeof(*bcd2k), &card);
+			THIS_MODULE, sizeof(*mbii), &card);
 	#endif
 	if (err < 0) {
 		mutex_unlock(&devices_mutex);
 		return err;
 	}
 
-	bcd2k = card->private_data;
-	bcd2k->dev = interface_to_usbdev(interface);
-	bcd2k->card = card;
-	bcd2k->card_index = card_index;
-	bcd2k->intf = interface;
+	mbii = card->private_data;
+	mbii->dev = interface_to_usbdev(interface);
+	mbii->card = card;
+	mbii->card_index = card_index;
+	mbii->intf = interface;
 
 	snd_card_set_dev(card, &interface->dev);
 
 	strncpy(card->driver, "snd-microbookii", sizeof(card->driver));
 	strncpy(card->shortname, DEVICENAME, sizeof(card->shortname));
-	usb_make_path(bcd2k->dev, usb_path, sizeof(usb_path));
-	snprintf(bcd2k->card->longname, sizeof(bcd2k->card->longname),
-			"Behringer " DEVICENAME " at %s",
+	usb_make_path(mbii->dev, usb_path, sizeof(usb_path));
+	snprintf(mbii->card->longname, sizeof(mbii->card->longname),
+			"MOTU " DEVICENAME " at %s",
 			usb_path);
-
-	err = microbookii_init_midi(bcd2k);
+			
+	/* set alternate configuration */
+	err = usb_set_interface(mbii->dev, 0, 1);
 	if (err < 0)
 		goto probe_error;
 
-	err = microbookii_init_audio(bcd2k);
-	if (err < 0)
+	err = microbookii_init_audio(mbii);
+	if (err < 0) {
 		goto probe_error;
-
-	err = microbookii_init_control(bcd2k);
-	if (err < 0)
+	}
+	
+	err = microbookii_init_control(mbii);
+	if (err < 0) {
+		microbookii_free_audio(mbii);
 		goto probe_error;
+	}
 
 	err = snd_card_register(card);
-	if (err < 0)
+	if (err < 0) {
+		microbookii_free_audio(mbii);
+		microbookii_free_control(mbii);
 		goto probe_error;
-
-	usb_set_intfdata(interface, bcd2k);
+	}
+	
+	usb_set_intfdata(interface, mbii);
 	set_bit(card_index, devices_used);
 
 	mutex_unlock(&devices_mutex);
 	return 0;
 
 probe_error:
-	dev_info(&bcd2k->dev->dev, PREFIX "error during probing");
+	dev_info(&mbii->dev->dev, PREFIX "error during probing");
 
 	microbookii_disconnect(interface);
 	mutex_unlock(&devices_mutex);
@@ -169,6 +179,6 @@ static struct usb_driver microbookii_driver = {
 module_usb_driver(microbookii_driver);
 
 MODULE_DEVICE_TABLE(usb, id_table);
-MODULE_AUTHOR("Mario Kicherer, dev@kicherer.org");
-MODULE_DESCRIPTION("Behringer BCD2000 driver");
+MODULE_AUTHOR("Manuel Reinhardt, manuel.jr16@gmail.com");
+MODULE_DESCRIPTION("MOTU MicroBook II driver");
 MODULE_LICENSE("GPL");

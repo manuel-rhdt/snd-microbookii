@@ -69,17 +69,17 @@ static int microbookii_midi_input_close(struct snd_rawmidi_substream *substream)
 static void microbookii_midi_input_trigger(struct snd_rawmidi_substream *substream,
 						int up)
 {
-	struct microbookii *bcd2k = substream->rmidi->private_data;
-	bcd2k->midi.receive_substream = up ? substream : NULL;
+	struct microbookii *mbii = substream->rmidi->private_data;
+	mbii->midi.receive_substream = up ? substream : NULL;
 }
 
-static void microbookii_midi_handle_input(struct microbookii *bcd2k,
+static void microbookii_midi_handle_input(struct microbookii *mbii,
 				const unsigned char *buf, unsigned int buf_len)
 {
 	unsigned int payload_length, tocopy;
 	struct snd_rawmidi_substream *receive_substream;
 
-	receive_substream = ACCESS_ONCE(bcd2k->midi.receive_substream);
+	receive_substream = ACCESS_ONCE(mbii->midi.receive_substream);
 	if (!receive_substream)
 		return;
 
@@ -103,19 +103,19 @@ static void microbookii_midi_handle_input(struct microbookii *bcd2k,
 					&buf[1], tocopy);
 }
 
-static void microbookii_midi_send(struct microbookii *bcd2k)
+static void microbookii_midi_send(struct microbookii *mbii)
 {
 	int len, ret;
 	struct snd_rawmidi_substream *send_substream;
 
 	BUILD_BUG_ON(sizeof(device_cmd_prefix) >= MIDI_URB_BUFSIZE);
 
-	send_substream = ACCESS_ONCE(bcd2k->midi.send_substream);
+	send_substream = ACCESS_ONCE(mbii->midi.send_substream);
 	if (!send_substream)
 		return;
 
 	/* copy command prefix bytes */
-	memcpy(bcd2k->midi.out_buffer, device_cmd_prefix,
+	memcpy(mbii->midi.out_buffer, device_cmd_prefix,
 			sizeof(device_cmd_prefix));
 
 	/*
@@ -123,30 +123,30 @@ static void microbookii_midi_send(struct microbookii *bcd2k)
 	 * and payload length
 	 */
 	len = snd_rawmidi_transmit(send_substream,
-							   bcd2k->midi.out_buffer + 3, MIDI_URB_BUFSIZE - 3);
+							   mbii->midi.out_buffer + 3, MIDI_URB_BUFSIZE - 3);
 
 	if (len < 0)
-		dev_err(&bcd2k->dev->dev, "%s: snd_rawmidi_transmit error %d\n",
+		dev_err(&mbii->dev->dev, "%s: snd_rawmidi_transmit error %d\n",
 				__func__, len);
 
 	if (len <= 0)
 		return;
 
 	/* set payload length */
-	bcd2k->midi.out_buffer[2] = len;
-	bcd2k->midi.out_urb->transfer_buffer_length = MIDI_URB_BUFSIZE;
+	mbii->midi.out_buffer[2] = len;
+	mbii->midi.out_urb->transfer_buffer_length = MIDI_URB_BUFSIZE;
 
 	microbookii_dump_buffer(PREFIX "sending to device: ",
-						bcd2k->midi.out_buffer, len+3);
+						mbii->midi.out_buffer, len+3);
 
 	/* send packet to the BCD2000 */
-	ret = usb_submit_urb(bcd2k->midi.out_urb, GFP_ATOMIC);
+	ret = usb_submit_urb(mbii->midi.out_urb, GFP_ATOMIC);
 	if (ret < 0)
-		dev_err(&bcd2k->dev->dev, PREFIX
+		dev_err(&mbii->dev->dev, PREFIX
 			"%s (%p): usb_submit_urb() failed, ret=%d, len=%d\n",
 			__func__, send_substream, ret, len);
 	else
-		bcd2k->midi.out_active = 1;
+		mbii->midi.out_active = 1;
 }
 
 static int microbookii_midi_output_open(struct snd_rawmidi_substream *substream)
@@ -156,11 +156,11 @@ static int microbookii_midi_output_open(struct snd_rawmidi_substream *substream)
 
 static int microbookii_midi_output_close(struct snd_rawmidi_substream *substream)
 {
-	struct microbookii *bcd2k = substream->rmidi->private_data;
+	struct microbookii *mbii = substream->rmidi->private_data;
 
-	if (bcd2k->midi.out_active) {
-		usb_kill_urb(bcd2k->midi.out_urb);
-		bcd2k->midi.out_active = 0;
+	if (mbii->midi.out_active) {
+		usb_kill_urb(mbii->midi.out_urb);
+		mbii->midi.out_active = 0;
 	}
 
 	return 0;
@@ -170,23 +170,23 @@ static int microbookii_midi_output_close(struct snd_rawmidi_substream *substream
 static void microbookii_midi_output_trigger(struct snd_rawmidi_substream *substream,
 						int up)
 {
-	struct microbookii *bcd2k = substream->rmidi->private_data;
+	struct microbookii *mbii = substream->rmidi->private_data;
 
 	if (up) {
-		bcd2k->midi.send_substream = substream;
+		mbii->midi.send_substream = substream;
 		/* check if there is data userspace wants to send */
-		if (!bcd2k->midi.out_active)
-			microbookii_midi_send(bcd2k);
+		if (!mbii->midi.out_active)
+			microbookii_midi_send(mbii);
 	} else {
-		bcd2k->midi.send_substream = NULL;
+		mbii->midi.send_substream = NULL;
 	}
 }
 
 static void microbookii_output_complete(struct urb *urb)
 {
-	struct microbookii *bcd2k = urb->context;
+	struct microbookii *mbii = urb->context;
 
-	bcd2k->midi.out_active = 0;
+	mbii->midi.out_active = 0;
 
 	if (urb->status)
 		dev_warn(&urb->dev->dev,
@@ -196,29 +196,29 @@ static void microbookii_output_complete(struct urb *urb)
 		return;
 
 	/* check if there is more data userspace wants to send */
-	microbookii_midi_send(bcd2k);
+	microbookii_midi_send(mbii);
 }
 
 static void microbookii_input_complete(struct urb *urb)
 {
 	int ret;
-	struct microbookii *bcd2k = urb->context;
+	struct microbookii *mbii = urb->context;
 
 	if (urb->status)
 		dev_warn(&urb->dev->dev,
 			PREFIX "input urb->status: %i\n", urb->status);
 
-	if (!bcd2k || urb->status == -ESHUTDOWN)
+	if (!mbii || urb->status == -ESHUTDOWN)
 		return;
 
 	if (urb->actual_length > 0)
-		microbookii_midi_handle_input(bcd2k, urb->transfer_buffer,
+		microbookii_midi_handle_input(mbii, urb->transfer_buffer,
 					urb->actual_length);
 
 	/* return URB to device */
-	ret = usb_submit_urb(bcd2k->midi.in_urb, GFP_ATOMIC);
+	ret = usb_submit_urb(mbii->midi.in_urb, GFP_ATOMIC);
 	if (ret < 0)
-		dev_err(&bcd2k->dev->dev, PREFIX
+		dev_err(&mbii->dev->dev, PREFIX
 			"%s: usb_submit_urb() failed, ret=%d\n",
 			__func__, ret);
 }
@@ -235,13 +235,13 @@ static struct snd_rawmidi_ops microbookii_midi_input = {
 	.trigger = microbookii_midi_input_trigger,
 };
 
-int microbookii_init_midi(struct microbookii *bcd2k)
+int microbookii_init_midi(struct microbookii *mbii)
 {
 	int ret;
 	struct snd_rawmidi *rmidi;
 	struct microbookii_midi *midi;
 
-	ret = snd_rawmidi_new(bcd2k->card, bcd2k->card->shortname, 0,
+	ret = snd_rawmidi_new(mbii->card, mbii->card->shortname, 0,
 					1, /* output */
 					1, /* input */
 					&rmidi);
@@ -249,10 +249,10 @@ int microbookii_init_midi(struct microbookii *bcd2k)
 	if (ret < 0)
 		return ret;
 
-	strlcpy(rmidi->name, bcd2k->card->shortname, sizeof(rmidi->name));
+	strlcpy(rmidi->name, mbii->card->shortname, sizeof(rmidi->name));
 
 	rmidi->info_flags = SNDRV_RAWMIDI_INFO_DUPLEX;
-	rmidi->private_data = bcd2k;
+	rmidi->private_data = mbii;
 
 	rmidi->info_flags |= SNDRV_RAWMIDI_INFO_OUTPUT;
 	snd_rawmidi_set_ops(rmidi, SNDRV_RAWMIDI_STREAM_OUTPUT,
@@ -262,26 +262,26 @@ int microbookii_init_midi(struct microbookii *bcd2k)
 	snd_rawmidi_set_ops(rmidi, SNDRV_RAWMIDI_STREAM_INPUT,
 					&microbookii_midi_input);
 
-	midi = &bcd2k->midi;
+	midi = &mbii->midi;
 	midi->rmidi = rmidi;
 
 	midi->in_urb = usb_alloc_urb(0, GFP_KERNEL);
 	midi->out_urb = usb_alloc_urb(0, GFP_KERNEL);
 
 	if (!midi->in_urb || !midi->out_urb) {
-		dev_err(&bcd2k->dev->dev, PREFIX "usb_alloc_urb failed\n");
+		dev_err(&mbii->dev->dev, PREFIX "usb_alloc_urb failed\n");
 		return -ENOMEM;
 	}
 
-	usb_fill_int_urb(midi->in_urb, bcd2k->dev,
-				usb_rcvintpipe(bcd2k->dev, 0x81),
+	usb_fill_int_urb(midi->in_urb, mbii->dev,
+				usb_rcvintpipe(mbii->dev, 0x81),
 				midi->in_buffer, MIDI_URB_BUFSIZE,
-				microbookii_input_complete, bcd2k, 1);
+				microbookii_input_complete, mbii, 1);
 
-	usb_fill_int_urb(midi->out_urb, bcd2k->dev,
-				usb_sndintpipe(bcd2k->dev, 0x1),
+	usb_fill_int_urb(midi->out_urb, mbii->dev,
+				usb_sndintpipe(mbii->dev, 0x1),
 				midi->out_buffer, MIDI_URB_BUFSIZE,
-				microbookii_output_complete, bcd2k, 1);
+				microbookii_output_complete, mbii, 1);
 
 	init_usb_anchor(&midi->anchor);
 	usb_anchor_urb(midi->out_urb, &midi->anchor);
@@ -294,7 +294,7 @@ int microbookii_init_midi(struct microbookii *bcd2k)
 	/* submit sequence */
 	ret = usb_submit_urb(midi->out_urb, GFP_KERNEL);
 	if (ret < 0)
-		dev_err(&bcd2k->dev->dev, PREFIX
+		dev_err(&mbii->dev->dev, PREFIX
 			"%s: usb_submit_urb() out failed, ret=%d: ",
 			__func__, ret);
 	else
@@ -303,7 +303,7 @@ int microbookii_init_midi(struct microbookii *bcd2k)
 	/* pass URB to device to enable button and controller events */
 	ret = usb_submit_urb(midi->in_urb, GFP_KERNEL);
 	if (ret < 0)
-		dev_err(&bcd2k->dev->dev, PREFIX
+		dev_err(&mbii->dev->dev, PREFIX
 			"%s: usb_submit_urb() in failed, ret=%d: ",
 			__func__, ret);
 
@@ -313,9 +313,9 @@ int microbookii_init_midi(struct microbookii *bcd2k)
 	return 0;
 }
 
-void microbookii_free_midi(struct microbookii *bcd2k)
+void microbookii_free_midi(struct microbookii *mbii)
 {
 	/* usb_kill_urb not necessary, urb is aborted automatically */
-	usb_free_urb(bcd2k->midi.out_urb);
-	usb_free_urb(bcd2k->midi.in_urb);
+	usb_free_urb(mbii->midi.out_urb);
+	usb_free_urb(mbii->midi.in_urb);
 }
