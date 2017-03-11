@@ -4,10 +4,8 @@
 #include <sound/pcm.h>
 
 #define USB_N_URBS 4
-#define USB_N_PACKETS_PER_URB 10
-#define USB_PACKET_OFFSET 144
-#define USB_PACKET_SIZE 144
-#define USB_BUFFER_SIZE (USB_PACKET_SIZE * USB_N_PACKETS_PER_URB)
+#define USB_N_PACKETS_PER_URB 8
+#define USB_MAX_FRAMES_PER_PACKET 6
 
 #define BYTES_PER_PERIOD (24 * 16)
 #define PERIODS_MAX 128
@@ -42,6 +40,7 @@ struct microbookii_substream {
 	struct list_head ready_playback_urbs;
 	long unsigned int active_mask;
 	
+	unsigned int max_packet_size;
 	struct microbookii_usb_packet_info {
 		uint32_t packet_size[USB_N_PACKETS_PER_URB];
 		int packets;
@@ -58,7 +57,8 @@ struct microbookii_pcm {
 	struct microbookii *mbii;
 
 	struct snd_pcm *instance;
-	struct snd_pcm_hardware pcm_info;
+	struct snd_pcm_hardware pcm_playback_info;
+	struct snd_pcm_hardware pcm_capture_info;
 
 	struct microbookii_substream capture;
 	struct microbookii_substream playback;

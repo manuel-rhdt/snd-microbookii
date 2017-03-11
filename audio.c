@@ -1,7 +1,8 @@
 /*
- * Behringer BCD2000 driver
+ * MOTU Microbook II driver
  *
  *   Copyright (C) 2014 Mario Kicherer (dev@kicherer.org)
+ *   Copyright (C) 2017 Manuel Reinhardt (manuel.jr16@gmail.com)
  *
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
@@ -37,11 +38,9 @@ static struct snd_pcm_hardware microbookii_pcm_hardware = {
 	.rate_min	= 44100,
 	.rate_max	= 96000,
 	*/
-	.rates		= SNDRV_PCM_RATE_44100,
-	.rate_min	= 44100,
-	.rate_max	= 44100,
-	.channels_min	= 8,
-	.channels_max	= 8,
+	.rates		= SNDRV_PCM_RATE_48000,
+	.rate_min	= 48000,
+	.rate_max	= 48000,
 	.buffer_bytes_max = ALSA_BUFFER_SIZE,
 	.period_bytes_min = BYTES_PER_PERIOD,
 	.period_bytes_max = ALSA_BUFFER_SIZE,
@@ -142,7 +141,7 @@ static void microbookii_prepare_outbound_urb(struct microbookii_urb *urb) {
 
 	spin_lock_irqsave(&stream->lock, flags);
 
-	memset(urb->instance.transfer_buffer, 0, USB_BUFFER_SIZE);
+	memset(urb->instance.transfer_buffer, 0, stream->max_packet_size * USB_N_PACKETS_PER_URB);
 
 	/* fill URB with data from ALSA */
 	microbookii_pcm_playback(stream, urb);
@@ -362,13 +361,13 @@ static void microbookii_pcm_urb_handler(struct urb *usb_urb)
 				spin_unlock_irqrestore(&stream->lock, flags);
 			}
 		}
-		memset(mbii_urb->instance.transfer_buffer, 0, USB_BUFFER_SIZE);
+		memset(mbii_urb->instance.transfer_buffer, 0, stream->max_packet_size * USB_N_PACKETS_PER_URB);
 
 		/* reset URB data */
 		for (k = 0; k < USB_N_PACKETS_PER_URB; k++) {
 			packet = &mbii_urb->packets[k];
-			packet->offset = k * USB_PACKET_OFFSET;
-			packet->length = USB_PACKET_SIZE;
+			packet->offset = k * stream->max_packet_size;
+			packet->length = stream->max_packet_size;
 			packet->actual_length = 0;
 			packet->status = 0;
 		}
@@ -407,15 +406,17 @@ static int microbookii_substream_open(struct snd_pcm_substream *substream)
 	struct microbookii_substream *stream = NULL;
 	struct microbookii_pcm *pcm = snd_pcm_substream_chip(substream);
 
-	substream->runtime->hw = pcm->pcm_info;
-
 	if (pcm->panic)
 		return -EPIPE;
 
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		stream = &pcm->playback;
-	else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
+		substream->runtime->hw = pcm->pcm_playback_info;
+	}
+	else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 		stream = &pcm->capture;
+		substream->runtime->hw = pcm->pcm_capture_info;
+	}
 
 	if (!stream) {
 		dev_err(&pcm->mbii->dev->dev, PREFIX "invalid stream type\n");
@@ -458,9 +459,52 @@ static int microbookii_substream_close(struct snd_pcm_substream *substream)
 	return 0;
 }
 
+static int microbookii_pcm_urb_buffer_alloc(struct microbookii_urb *urb, unsigned int buffer_size) {
+	if (urb->instance.transfer_buffer != NULL) {
+		kfree(urb->instance.transfer_buffer);
+		urb->instance.transfer_buffer_length = 0;
+	}
+
+	urb->instance.transfer_buffer = kzalloc(buffer_size, GFP_ATOMIC);
+	if (!urb->instance.transfer_buffer)
+		return -ENOMEM;
+
+	urb->instance.transfer_buffer_length = buffer_size;
+	return 0;
+}
+
 static int microbookii_pcm_hw_params(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *hw_params)
 {
+	struct microbookii_pcm *pcm = snd_pcm_substream_chip(substream);
+	struct microbookii_substream *stream = NULL;
+
+	unsigned int urb_buffer_size, urb_packet_size;
+	unsigned int max_frames_per_packet = 0;
+	unsigned int bytes_per_frame = 3;
+	int i, err;
+	
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		stream = &pcm->playback;
+	else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
+		stream = &pcm->capture;
+	
+	if (params_rate(hw_params) >= 88200) {
+		max_frames_per_packet = 2 * USB_MAX_FRAMES_PER_PACKET;
+	} else {
+		max_frames_per_packet = USB_MAX_FRAMES_PER_PACKET;
+	}
+	urb_packet_size = params_channels(hw_params) * max_frames_per_packet * bytes_per_frame;
+	urb_buffer_size = urb_packet_size * USB_N_PACKETS_PER_URB;
+	
+	stream->max_packet_size = urb_packet_size;
+	printk(KERN_ALERT "max packet size: %i", stream->max_packet_size);
+	for (i = 0; i < USB_N_URBS; i++) {
+		err = microbookii_pcm_urb_buffer_alloc(&stream->urbs[i], urb_buffer_size);
+		if (err < 0)
+			return err;
+	}
+
 	return snd_pcm_lib_alloc_vmalloc_buffer(substream,
 					params_buffer_bytes(hw_params));
 }
@@ -492,8 +536,8 @@ static int microbookii_pcm_stream_start(struct microbookii_pcm *pcm, struct micr
 			} else {
 				for (k = 0; k < USB_N_PACKETS_PER_URB; k++) {
 					packet = &stream->urbs[i].packets[k];
-					packet->offset = k * USB_PACKET_OFFSET;
-					packet->length = USB_PACKET_SIZE;
+					packet->offset = k * stream->max_packet_size;
+					packet->length = stream->max_packet_size;
 					packet->actual_length = 0;
 					packet->status = 0;
 				}
@@ -656,11 +700,8 @@ static int microbookii_pcm_init_urb(struct microbookii_urb *urb,
 	urb->mbii = mbii;
 	usb_init_urb(&urb->instance);
 
-	urb->instance.transfer_buffer = kzalloc(USB_BUFFER_SIZE, GFP_KERNEL);
-	if (!urb->instance.transfer_buffer)
-		return -ENOMEM;
-
-	urb->instance.transfer_buffer_length = USB_BUFFER_SIZE;
+	urb->instance.transfer_buffer = NULL;
+	urb->instance.transfer_buffer_length = 0;
 	urb->instance.dev = mbii->dev;
 	urb->instance.pipe = in ? usb_rcvisocpipe(mbii->dev, ep)
 							: usb_sndisocpipe(mbii->dev, ep);
@@ -747,8 +788,15 @@ int microbookii_init_audio(struct microbookii *mbii)
 
 	strlcpy(pcm->instance->name, DEVICENAME, sizeof(pcm->instance->name));
 
-	memcpy(&pcm->pcm_info, &microbookii_pcm_hardware,
+	memcpy(&pcm->pcm_playback_info, &microbookii_pcm_hardware,
 		sizeof(microbookii_pcm_hardware));
+	memcpy(&pcm->pcm_capture_info, &microbookii_pcm_hardware,
+		sizeof(microbookii_pcm_hardware));
+		
+	pcm->pcm_playback_info.channels_min = 8;
+	pcm->pcm_playback_info.channels_max = 8;
+	pcm->pcm_capture_info.channels_min = 6;
+	pcm->pcm_capture_info.channels_max = 6;
 
 	snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_PLAYBACK, &microbookii_ops);
 	snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_CAPTURE, &microbookii_ops);
