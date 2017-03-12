@@ -1,14 +1,7 @@
 snd-microbookii
 ===============
 
-Linux driver for the Behringer BCD2000 DJ controller (1397:00bd) [Official Behringer Website](http://www.behringer.com/EN/Products/BCD2000.aspx)
-
-*Please note*: Audio support is experimental and only available in the audio branch. Please use it with caution.
-
-Dependencies:
-
-* snd_usbmidi_lib
-* snd_rawmidi
+Linux driver for the Motu Microbook II.
 
 Usage:
 
@@ -23,6 +16,3 @@ If it doesn't work:
 
 * Make sure you have all build tools, e.g., gcc and make, and the kernel headers installed.
   For Ubuntu: ```apt-get install build-essential linux-headers```
-* If you can build and load the module, but it doesn't work, check the output of ```dmesg```.
-  E.g., if there are errors like ```snd_usb_microbookii: Unknown symbol snd_rawmidi_receive``` you
-  have to load the dependencies of our module first. In the above case, execute ```modprobe snd_usbmidi-lib```.
