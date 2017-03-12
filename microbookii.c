@@ -26,7 +26,6 @@
 #include <linux/delay.h>
 
 #include "microbookii.h"
-#include "midi.h"
 #include "audio.h"
 #include "control.h"
 
