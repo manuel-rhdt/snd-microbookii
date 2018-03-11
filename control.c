@@ -24,47 +24,54 @@
 #include "microbookii.h"
 #include "control.h"
 
-static void microbookii_interrupt_in_urb_handler(struct urb *usb_urb) {
+static void microbookii_interrupt_in_urb_handler(struct urb *usb_urb)
+{
 	struct microbookii *mbii = usb_urb->context;
 	struct microbookii_message *msg = &mbii->control.msg;
-	
+
 	if (usb_urb->status < 0) {
-		dev_err(&mbii->dev->dev, PREFIX "URB rcv Error: %i", usb_urb->status);
+		dev_err(&mbii->dev->dev, PREFIX "URB rcv Error: %i",
+			usb_urb->status);
 		return;
 	}
-	
+
 	msg->len = usb_urb->actual_length;
 	complete_all(&msg->responded);
 }
 
-static void microbookii_interrupt_out_urb_handler(struct urb *usb_urb) {
+static void microbookii_interrupt_out_urb_handler(struct urb *usb_urb)
+{
 	int err = 0;
 	struct usb_host_endpoint *ep;
 	unsigned int rcv_pipe = 0;
 
 	struct microbookii_message *msg = usb_urb->context;
 	struct microbookii *mbii = msg->mbii;
-	
+
 	if (usb_urb->status < 0) {
-		dev_err(&mbii->dev->dev, PREFIX "URB Error: %i", usb_urb->status);
+		dev_err(&mbii->dev->dev, PREFIX "URB Error: %i",
+			usb_urb->status);
 		return;
 	}
-	
+
 	msg->len = 0;
 	memset(msg->buffer, 0, MSG_BUF_LEN);
-	
+
 	rcv_pipe = usb_rcvintpipe(mbii->dev, 0x82);
 	ep = usb_pipe_endpoint(mbii->dev, rcv_pipe);
-	usb_fill_int_urb(msg->urb, mbii->dev, rcv_pipe, msg->buffer, 
-			MSG_BUF_LEN, microbookii_interrupt_in_urb_handler, 
-			mbii, ep->desc.bInterval);
+	usb_fill_int_urb(msg->urb, mbii->dev, rcv_pipe, msg->buffer,
+			 MSG_BUF_LEN, microbookii_interrupt_in_urb_handler,
+			 mbii, ep->desc.bInterval);
 	err = usb_submit_urb(msg->urb, GFP_ATOMIC);
 	if (err < 0) {
-		dev_err(&mbii->dev->dev, PREFIX "Error: rcv: usb_submit_urb returned %i", err);
+		dev_err(&mbii->dev->dev,
+			PREFIX "Error: rcv: usb_submit_urb returned %i", err);
 	}
 }
 
-int microbookii_control_communicate(struct microbookii *mbii, struct microbookii_message *msg) {
+int microbookii_control_communicate(struct microbookii *mbii,
+				    struct microbookii_message *msg)
+{
 	int ret = 0;
 	unsigned int snd_pipe = 0;
 	struct usb_host_endpoint *ep;
@@ -72,51 +79,58 @@ int microbookii_control_communicate(struct microbookii *mbii, struct microbookii
 
 	snd_pipe = usb_sndintpipe(mbii->dev, 0x01);
 	ep = usb_pipe_endpoint(mbii->dev, snd_pipe);
-	
+
 	msg->mbii = mbii;
 	msg->message_num = control->message_counter;
-	((unsigned char *)msg->buffer)[0] = (unsigned char)control->message_counter;
+	((unsigned char *)msg->buffer)[0] =
+		(unsigned char)control->message_counter;
 	control->message_counter += 1;
-	
+
 	microbookii_dump_buffer(PREFIX "snd: ", msg->buffer, msg->len);
-	
-	usb_fill_int_urb(msg->urb, mbii->dev, snd_pipe, msg->buffer, 
-			msg->len, microbookii_interrupt_out_urb_handler, 
-			msg, ep->desc.bInterval);
-			
+
+	usb_fill_int_urb(msg->urb, mbii->dev, snd_pipe, msg->buffer, msg->len,
+			 microbookii_interrupt_out_urb_handler, msg,
+			 ep->desc.bInterval);
+
 	ret = usb_submit_urb(msg->urb, GFP_KERNEL);
 	if (ret < 0) {
-		dev_err(&mbii->dev->dev, PREFIX "Could not send message: usb_submit_urb returned %i", ret);
+		dev_err(&mbii->dev->dev,
+			PREFIX
+			"Could not send message: usb_submit_urb returned %i",
+			ret);
 		return ret;
 	}
-	
-	ret = (int)wait_for_completion_timeout(&msg->responded, msecs_to_jiffies(100));
+
+	ret = (int)wait_for_completion_timeout(&msg->responded,
+					       msecs_to_jiffies(100));
 	if (ret == 0) {
 		// timed out
 		return -EBUSY;
 	}
-	
+
 	if (msg->len <= 0) {
 		// no answer
 		return -EINVAL;
 	}
-	
+
 	microbookii_dump_buffer(PREFIX "rcv: ", msg->buffer, msg->len);
-	
+
 	if (((unsigned char *)msg->buffer)[0] != msg->message_num) {
 		dev_err(&mbii->dev->dev, PREFIX "Received wrong message");
 		return -EINVAL;
 	}
-	
+
 	return 0;
 }
 
-int microbookii_poll_device_ready(struct microbookii *mbii) {
+int microbookii_poll_device_ready(struct microbookii *mbii)
+{
 	int err = 0;
 	unsigned char last_byte = 0;
 	struct microbookii_message *msg;
 
-	unsigned char msg_is_ready[] = {0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x0B, 0x18};
+	unsigned char msg_is_ready[] = {0x00, 0x04, 0x00, 0x00,
+					0x00, 0x00, 0x0B, 0x18};
 	int snd_len = sizeof(msg_is_ready);
 
 	while (!completion_done(&mbii->control.device_setup)) {
@@ -126,7 +140,8 @@ int microbookii_poll_device_ready(struct microbookii *mbii) {
 		msg->len = snd_len;
 		err = microbookii_control_communicate(mbii, msg);
 		if (err < 0) {
-			dev_err(&mbii->dev->dev, PREFIX "Error while polling...");
+			dev_err(&mbii->dev->dev,
+				PREFIX "Error while polling...");
 			microbookii_message_put(msg);
 			return err;
 		}
@@ -138,74 +153,80 @@ int microbookii_poll_device_ready(struct microbookii *mbii) {
 			break;
 		}
 		microbookii_message_put(msg);
-		
+
 		msleep(100);
 	}
-	
+
 	return 0;
 }
 
-int microbookii_set_rate(struct microbookii *mbii, unsigned int rate) {
+int microbookii_set_rate(struct microbookii *mbii, unsigned int rate)
+{
 	int err = 0;
 	struct microbookii_message *msg;
 	static unsigned int msg_len = 12;
-	
+
 	if (mbii->control.current_rate == rate) {
 		return 0;
 	}
-	
+
 	msg = microbookii_message_get(mbii);
 	memset(msg->buffer, 0, msg_len);
 	msg->len = msg_len;
-	
+
 	((unsigned char *)msg->buffer)[6] = 0x0b;
 	((unsigned char *)msg->buffer)[7] = 0x14;
-	
-	switch(rate) {
-		case 44100:
-			((unsigned char *)msg->buffer)[11] = 0x02;
-			break;
-		case 48000:
-			((unsigned char *)msg->buffer)[11] = 0x00;
-			break;
-		case 96000:
-			((unsigned char *)msg->buffer)[6] = 0x01;
-			break;
-		default:
-			/* unsupported rate */
-			dev_err(&mbii->dev->dev, PREFIX "Error setting rate (unsupported rate)");
-			microbookii_message_put(msg);
-			return -EINVAL;
+
+	switch (rate) {
+	case 44100:
+		((unsigned char *)msg->buffer)[11] = 0x02;
+		break;
+	case 48000:
+		((unsigned char *)msg->buffer)[11] = 0x00;
+		break;
+	case 96000:
+		//((unsigned char *)msg->buffer)[6] = 0x01;
+		((unsigned char *)msg->buffer)[11] = 0x01;
+		break;
+	default:
+		/* unsupported rate */
+		dev_err(&mbii->dev->dev,
+			PREFIX "Error setting rate (unsupported rate)");
+		microbookii_message_put(msg);
+		return -EINVAL;
 	}
-	
+
 	err = microbookii_control_communicate(mbii, msg);
 	if (err < 0) {
 		dev_err(&mbii->dev->dev, PREFIX "Error setting rate...");
 		microbookii_message_put(msg);
 		return err;
 	}
-	
+
 	microbookii_message_put(msg);
-	
+
 	mbii->control.current_rate = rate;
 	// Device needs to resetup
 	reinit_completion(&mbii->control.device_setup);
 	return 0;
 }
 
-struct microbookii_message *microbookii_message_get(struct microbookii *mbii) {
+struct microbookii_message *microbookii_message_get(struct microbookii *mbii)
+{
 	mutex_lock(&mbii->control.message_lock);
 	return &mbii->control.msg;
 }
 
-void microbookii_message_put(struct microbookii_message *msg) {
+void microbookii_message_put(struct microbookii_message *msg)
+{
 	msg->len = 0;
 	memset(msg->buffer, 0, MSG_BUF_LEN);
 	reinit_completion(&msg->responded);
 	mutex_unlock(&msg->mbii->control.message_lock);
 }
 
-int microbookii_init_message(struct microbookii_message *msg) {
+int microbookii_init_message(struct microbookii_message *msg)
+{
 	msg->urb = usb_alloc_urb(0, GFP_KERNEL);
 	if (!msg->urb) {
 		return -ENOMEM;
@@ -221,32 +242,154 @@ int microbookii_init_message(struct microbookii_message *msg) {
 	return 0;
 }
 
-void microbookii_del_message(struct microbookii_message *msg) {
+void microbookii_del_message(struct microbookii_message *msg)
+{
 	if (!completion_done(&msg->responded)) {
 		msg->len = 0;
 		complete_all(&msg->responded);
 	}
 	usb_kill_urb(msg->urb);
 	usb_free_urb(msg->urb);
-	
+
 	kfree(msg->buffer);
+}
+
+static int microbookii_control_info(struct snd_kcontrol *kcontrol,
+				    struct snd_ctl_elem_info *uinfo)
+{
+	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
+	uinfo->count = 1;
+	uinfo->value.integer.min = 0;
+	uinfo->value.integer.max = 0x20000000;
+	return 0;
+}
+
+static int microbookii_control_get(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	struct microbookii *mbii = snd_kcontrol_chip(kcontrol);
+	int err = 0;
+	struct microbookii_message *msg;
+
+	static unsigned int msg_len = 8;
+
+	msg = microbookii_message_get(mbii);
+	memset(msg->buffer, 0, msg_len);
+	msg->len = msg_len;
+
+	msg->buffer[1] = 0x04;
+	*((int *)&msg->buffer[4]) = kcontrol->private_value;
+
+	err = microbookii_control_communicate(mbii, msg);
+	if (err < 0) {
+		dev_err(&mbii->dev->dev, PREFIX "Error getting control value.");
+		microbookii_message_put(msg);
+		return err;
+	}
+
+	WARN_ON(msg->len != 12);
+	if (msg->len >= 12) {
+		ucontrol->value.integer.value[0] =
+			be32_to_cpu(*((int *)&msg->buffer[8]));
+	}
+
+	microbookii_message_put(msg);
+
+	return 0;
+}
+
+static int microbookii_control_put(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	struct microbookii *mbii = snd_kcontrol_chip(kcontrol);
+	int err = 0;
+	struct microbookii_message *msg;
+
+	static unsigned int msg_len = 12;
+
+	msg = microbookii_message_get(mbii);
+	memset(msg->buffer, 0, msg_len);
+	msg->len = msg_len;
+
+	*((int *)&msg->buffer[4]) = kcontrol->private_value;
+	*((int *)&msg->buffer[8]) =
+		cpu_to_be32(ucontrol->value.integer.value[0]);
+
+	err = microbookii_control_communicate(mbii, msg);
+	if (err < 0) {
+		dev_err(&mbii->dev->dev, PREFIX "Error getting control value.");
+		microbookii_message_put(msg);
+		return err;
+	}
+
+	WARN_ON(msg->len != 8);
+
+	microbookii_message_put(msg);
+
+	return 1;
+}
+
+
+int _microbookii_add_control(struct microbookii *mbii, const char *name,
+			     const int identifier)
+{
+	struct snd_kcontrol *kcontrol;
+	int ret = 0;
+
+	struct snd_kcontrol_new microbookii_kcontrol = {
+		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.name = name,
+		.index = 0,
+		.access = SNDRV_CTL_ELEM_ACCESS_READWRITE | SNDRV_CTL_ELEM_ACCESS_VOLATILE,
+		.private_value = cpu_to_be32(identifier),
+		.info = microbookii_control_info,
+		.get = microbookii_control_get,
+		.put = microbookii_control_put};
+
+	kcontrol = snd_ctl_new1(&microbookii_kcontrol, mbii);
+	if (!kcontrol) {
+		return -EINVAL;
+	}
+
+	ret = snd_ctl_add(mbii->card, kcontrol);
+	if (ret < 0) {
+		return ret;
+	}
+
+	return 0;
+}
+
+#define microbookii_add_control(mbii, name, ident)                             \
+	{if (_microbookii_add_control(mbii, name, ident) < 0){return -1;}}
+
+int microbookii_add_controls(struct microbookii *mbii)
+{
+	microbookii_add_control(mbii, "Master Playback Volume", 0x00000c1e);
+	microbookii_add_control(mbii, "Phone Playback Volume", 0x00000c1f);
+
+	return 0;
 }
 
 int microbookii_init_control(struct microbookii *mbii)
 {
 	int ret = 0;
-	
+
 	mutex_init(&mbii->control.message_lock);
 
 	mbii->control.message_counter = 1;
 	mbii->control.current_rate = 0;
 	init_completion(&mbii->control.device_setup);
-	
+
 	ret = microbookii_init_message(&mbii->control.msg);
 	if (ret < 0) {
 		return ret;
 	}
-	
+
+	ret = microbookii_add_controls(mbii);
+	if (ret < 0) {
+		return ret;
+	}
+
 	return 0;
 }
 
@@ -255,6 +398,6 @@ void microbookii_free_control(struct microbookii *mbii)
 	if (!completion_done(&mbii->control.device_setup)) {
 		complete_all(&mbii->control.device_setup);
 	}
-	
+
 	microbookii_del_message(&mbii->control.msg);
 }

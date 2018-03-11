@@ -29,6 +29,7 @@
 
 static struct snd_pcm_hardware microbookii_pcm_hardware = {
 	.info = SNDRV_PCM_INFO_MMAP |
+			SNDRV_PCM_INFO_MMAP_VALID |
 			SNDRV_PCM_INFO_INTERLEAVED |
 			SNDRV_PCM_INFO_BATCH |
 			SNDRV_PCM_INFO_BLOCK_TRANSFER,
@@ -38,14 +39,14 @@ static struct snd_pcm_hardware microbookii_pcm_hardware = {
 	.rate_min	= 44100,
 	.rate_max	= 96000,
 	*/
-	.rates		= SNDRV_PCM_RATE_48000,
-	.rate_min	= 48000,
-	.rate_max	= 48000,
-	.buffer_bytes_max = ALSA_BUFFER_SIZE,
-	.period_bytes_min = BYTES_PER_PERIOD,
-	.period_bytes_max = ALSA_BUFFER_SIZE,
-	.periods_min	= 1,
-	.periods_max	= PERIODS_MAX,
+	.rates		= SNDRV_PCM_RATE_96000,
+	.rate_min	= 96000,
+	.rate_max	= 96000,
+	.buffer_bytes_max = 1024*1024,
+	.period_bytes_min = 64,
+	.period_bytes_max = 512*1024,
+	.periods_min	= 2,
+	.periods_max	= 1024,
 };
 
 enum {
@@ -185,7 +186,7 @@ static void queue_pending_output_urbs(struct microbookii_substream *stream)
 	
 	while (stream->state == STREAM_RUNNING) {
 		unsigned long flags;
-		struct microbookii_usb_packet_info *uninitialized_var(packet);
+		struct microbookii_usb_packet_info *packet;
 		struct microbookii_urb *urb = NULL;
 		int err, i, offset;
 

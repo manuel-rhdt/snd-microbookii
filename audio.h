@@ -1,15 +1,12 @@
 #ifndef AUDIO_H
 #define AUDIO_H
 
+#include <linux/usb.h>
 #include <sound/pcm.h>
 
 #define USB_N_URBS 4
 #define USB_N_PACKETS_PER_URB 8
 #define USB_MAX_FRAMES_PER_PACKET 6
-
-#define BYTES_PER_PERIOD (24 * 16)
-#define PERIODS_MAX 128
-#define ALSA_BUFFER_SIZE (BYTES_PER_PERIOD * PERIODS_MAX)
 
 struct microbookii;
 

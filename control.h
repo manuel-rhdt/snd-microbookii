@@ -5,6 +5,7 @@
 
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
+#include <linux/completion.h>
 
 struct microbookii;
 
@@ -12,7 +13,7 @@ struct microbookii_message {
 	struct microbookii *mbii;
 	struct urb *urb;
 	unsigned char message_num;
-	void *buffer;
+	char *buffer;
 	int len;
 	struct completion responded;
 };
