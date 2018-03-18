@@ -614,21 +614,32 @@ static int microbookii_pcm_stream_start(struct microbookii_pcm *pcm,
 				}
 			}
 		}
-		stream->state = STREAM_RUNNING;
 
-		/* wait for first out urb to return (sent in in urb handler) */ /*
-		wait_event_timeout(stream->wait_queue,
-						   stream->wait_cond, HZ);
-		if (stream->wait_cond) {
-			dev_dbg(&pcm->mbii->dev->dev, PREFIX
-					"%s: stream is running wakeup event\n", __func__);
-			stream->state = STREAM_RUNNING;
-		} else {
-			microbookii_pcm_stream_stop(pcm, stream);
-			return -EIO;
-		}
-		*/
+		stream->state = STREAM_RUNNING;
 	}
+	return 0;
+}
+
+static int microbookii_stream_prepare(struct microbookii_pcm *pcm,
+				      struct microbookii_substream *stream)
+{
+	int err;
+
+	mutex_lock(&stream->mutex);
+	stream->dma_off = 0;
+	stream->period_off = 0;
+	stream->last_delay = 0;
+	stream->last_usb_frame = 0;
+
+	if (stream->state == STREAM_DISABLED) {
+		err = microbookii_pcm_stream_start(pcm, stream);
+		if (err) {
+			mutex_unlock(&stream->mutex);
+			return err;
+		}
+	}
+	mutex_unlock(&stream->mutex);
+
 	return 0;
 }
 
@@ -665,39 +676,24 @@ static int microbookii_pcm_prepare(struct snd_pcm_substream *substream)
 		return ret;
 	}
 	
-	mutex_lock(&stream->mutex);
-	stream->dma_off = 0;
-	stream->period_off = 0;
+	substream->runtime->delay = 0;
 
-	if (stream->state == STREAM_DISABLED) {
-		ret = microbookii_pcm_stream_start(pcm, stream);
-		if (ret) {
-			mutex_unlock(&stream->mutex);
-			dev_err(&pcm->mbii->dev->dev, PREFIX
-					"could not start pcm stream\n");
+	ret = microbookii_stream_prepare(pcm, stream);
+	if (ret < 0) {
+		dev_err(&pcm->mbii->dev->dev,
+			PREFIX "could not start pcm stream\n");
+			return ret;
+		}
+	
+	if (sync_stream != NULL) {
+		ret = microbookii_stream_prepare(pcm, sync_stream);
+		if (ret < 0) {
+			dev_err(&pcm->mbii->dev->dev,
+				PREFIX "could not start pcm sync stream\n");
 			return ret;
 		}
 	}
-	mutex_unlock(&stream->mutex);
-	
-	if (!sync_stream) {
-		return 0;
-	}
-	
-	mutex_lock(&sync_stream->mutex);
-	sync_stream->dma_off = 0;
-	sync_stream->period_off = 0;
 
-	if (sync_stream->state == STREAM_DISABLED) {
-		ret = microbookii_pcm_stream_start(pcm, sync_stream);
-		if (ret) {
-			mutex_unlock(&sync_stream->mutex);
-			dev_err(&pcm->mbii->dev->dev, PREFIX
-					"could not start pcm stream\n");
-			return ret;
-		}
-	}
-	mutex_unlock(&sync_stream->mutex);
 	return 0;
 }
 

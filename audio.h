@@ -48,6 +48,12 @@ struct microbookii_substream {
 	struct mutex mutex;
 	wait_queue_head_t wait_queue;
 	bool wait_cond;
+
+        /** timestamps and delays **/
+        bool trigger_tstamp_pending_update; /* update trigger_tstamp after initial calculation */
+        
+        int last_usb_frame;
+        int last_delay;
 };
 
 struct microbookii_pcm {
