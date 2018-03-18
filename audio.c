@@ -28,36 +28,33 @@
 
 
 static struct snd_pcm_hardware microbookii_pcm_hardware = {
-	.info = SNDRV_PCM_INFO_MMAP |
-			SNDRV_PCM_INFO_MMAP_VALID |
-			SNDRV_PCM_INFO_INTERLEAVED |
-			SNDRV_PCM_INFO_BATCH |
-			SNDRV_PCM_INFO_BLOCK_TRANSFER,
-	.formats	= SNDRV_PCM_FMTBIT_S24_3BE,
+	.info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID
+		| SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BATCH
+		| SNDRV_PCM_INFO_BLOCK_TRANSFER,
+	.formats = SNDRV_PCM_FMTBIT_S24_3BE,
 	/*
 	.rates		= SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_96000,
 	.rate_min	= 44100,
 	.rate_max	= 96000,
 	*/
-	.rates		= SNDRV_PCM_RATE_96000,
-	.rate_min	= 96000,
-	.rate_max	= 96000,
-	.buffer_bytes_max = 1024*1024,
+	.rates = SNDRV_PCM_RATE_96000,
+	.rate_min = 96000,
+	.rate_max = 96000,
+	.buffer_bytes_max = 1024 * 1024,
 	.period_bytes_min = 64,
-	.period_bytes_max = 512*1024,
-	.periods_min	= 2,
-	.periods_max	= 1024,
+	.period_bytes_max = 512 * 1024,
+	.periods_min = 2,
+	.periods_max = 1024,
 };
 
-enum {
-	STREAM_DISABLED, /* no pcm streaming */
+enum { STREAM_DISABLED, /* no pcm streaming */
 	STREAM_STARTING, /* pcm streaming requested, waiting to become ready */
-	STREAM_RUNNING, /* pcm streaming running */
-	STREAM_STOPPING
-};
+       STREAM_RUNNING,  /* pcm streaming running */
+       STREAM_STOPPING };
 
 /* copy the audio frames from the URB packets into the ALSA buffer */
-static void microbookii_pcm_capture(struct microbookii_substream *sub, struct microbookii_urb *urb)
+static void microbookii_pcm_capture(struct microbookii_substream *sub,
+				    struct microbookii_urb *urb)
 {
 	int i, frame, frame_count, bytes_per_frame;
 	void *src, *dest, *dest_end;
@@ -68,8 +65,8 @@ static void microbookii_pcm_capture(struct microbookii_substream *sub, struct mi
 	alsa_rt = sub->instance->runtime;
 
 	dest = (alsa_rt->dma_area + sub->dma_off);
-	dest_end = alsa_rt->dma_area +
-				frames_to_bytes(alsa_rt, alsa_rt->buffer_size);
+	dest_end = alsa_rt->dma_area
+		   + frames_to_bytes(alsa_rt, alsa_rt->buffer_size);
 
 	bytes_per_frame = alsa_rt->frame_bits / 8;
 	src = urb->instance.transfer_buffer;
@@ -91,7 +88,8 @@ static void microbookii_pcm_capture(struct microbookii_substream *sub, struct mi
 			}
 		}
 
-		/* if packet was not full, make src point to data of next packet */
+		/* if packet was not full, make src point to data of next packet
+		 */
 		src += urb->packets[i].length - urb->packets[i].actual_length;
 	}
 }
@@ -108,8 +106,8 @@ static void microbookii_pcm_playback(struct microbookii_substream *sub, struct m
 	alsa_rt = sub->instance->runtime;
 
 	src = (alsa_rt->dma_area + sub->dma_off);
-	src_end = alsa_rt->dma_area +
-				frames_to_bytes(alsa_rt, alsa_rt->buffer_size);
+	src_end = alsa_rt->dma_area
+		  + frames_to_bytes(alsa_rt, alsa_rt->buffer_size);
 
 	dest = urb->instance.transfer_buffer;
 	
@@ -180,7 +178,8 @@ static void queue_pending_output_urbs(struct microbookii_substream *stream)
 	struct microbookii_pcm *pcm = snd_pcm_substream_chip(stream->instance);
 	struct microbookii *mbii = pcm->mbii;
 	if (stream->instance->stream != SNDRV_PCM_STREAM_PLAYBACK) {
-		dev_err(&mbii->dev->dev, "Called queue_pending_output_urbs for caputre substream.");
+		dev_err(&mbii->dev->dev,
+			"Called queue_pending_output_urbs for caputre substream.");
 		return;
 	}
 	
@@ -191,14 +190,17 @@ static void queue_pending_output_urbs(struct microbookii_substream *stream)
 		int err, i, offset;
 
 		spin_lock_irqsave(&stream->lock, flags);
-		if (stream->next_packet_read_pos != stream->next_packet_write_pos) {
-			packet = stream->next_packet + stream->next_packet_read_pos;
+		if (stream->next_packet_read_pos
+		    != stream->next_packet_write_pos) {
+			packet = stream->next_packet
+				 + stream->next_packet_read_pos;
 			stream->next_packet_read_pos++;
 			stream->next_packet_read_pos %= USB_N_URBS;
 
 			/* take URB out of FIFO */
 			if (!list_empty(&stream->ready_playback_urbs))
-				urb = list_first_entry(&stream->ready_playback_urbs,
+				urb = list_first_entry(
+					&stream->ready_playback_urbs,
 					       struct microbookii_urb, ready_list);
 		}
 		spin_unlock_irqrestore(&stream->lock, flags);
@@ -225,8 +227,8 @@ static void queue_pending_output_urbs(struct microbookii_substream *stream)
 		err = usb_submit_urb(&urb->instance, GFP_ATOMIC);
 		if (err < 0)
 			dev_err(&mbii->dev->dev,
-				"Unable to submit urb: %d (urb %p)\n",
-				err, &urb->instance);
+				"Unable to submit urb: %d (urb %p)\n", err,
+				&urb->instance);
 		else
 			set_bit(urb->index, &stream->active_mask);
 	}
@@ -274,7 +276,8 @@ void microbookii_handle_sync_urb(struct microbookii_pcm *pcm,
 		return;
 
 	spin_lock_irqsave(&pcm->playback.lock, flags);
-	out_packet = pcm->playback.next_packet + pcm->playback.next_packet_write_pos;
+	out_packet =
+		pcm->playback.next_packet + pcm->playback.next_packet_write_pos;
 
 	/*
 	 * Iterate through the inbound packet and prepare the lengths
@@ -290,7 +293,8 @@ void microbookii_handle_sync_urb(struct microbookii_pcm *pcm,
 	for (i = 0; i < USB_N_PACKETS_PER_URB; i++) {
 		if (usb_urb->iso_frame_desc[i].status == 0)
 			out_packet->packet_size[i] =
-				usb_urb->iso_frame_desc[i].actual_length / 6 * 8;
+				usb_urb->iso_frame_desc[i].actual_length / 6
+				* 8;
 		else
 			out_packet->packet_size[i] = 0;
 	}
@@ -301,7 +305,7 @@ void microbookii_handle_sync_urb(struct microbookii_pcm *pcm,
 	queue_pending_output_urbs(&pcm->playback);
 }
 
-/* handle URB */
+/* handle URB callback */
 static void microbookii_pcm_urb_handler(struct urb *usb_urb)
 {
 	struct microbookii_urb *mbii_urb = usb_urb->context;
@@ -315,10 +319,10 @@ static void microbookii_pcm_urb_handler(struct urb *usb_urb)
 		return;
 	}
 
-	if (unlikely(usb_urb->status == -ENOENT ||		/* unlinked */
-				usb_urb->status == -ENODEV ||		/* device removed */
-				usb_urb->status == -ECONNRESET ||	/* unlinked */
-				usb_urb->status == -ESHUTDOWN))		/* device disabled */
+	if (unlikely(usb_urb->status == -ENOENT ||     /* unlinked */
+		     usb_urb->status == -ENODEV ||     /* device removed */
+		     usb_urb->status == -ECONNRESET || /* unlinked */
+		     usb_urb->status == -ESHUTDOWN))   /* device disabled */
 	{
 		goto out_fail;
 	}
@@ -336,8 +340,7 @@ static void microbookii_pcm_urb_handler(struct urb *usb_urb)
 		clear_bit(mbii_urb->index, &stream->active_mask);
 		
 		queue_pending_output_urbs(stream);
-	}
-	else {
+	} else {
 		if (pcm->playback.active) {
 			microbookii_handle_sync_urb(pcm, usb_urb);
 		}
@@ -347,7 +350,8 @@ static void microbookii_pcm_urb_handler(struct urb *usb_urb)
 			/* copy captured data into ALSA buffer */
 			microbookii_pcm_capture(stream, mbii_urb);
 
-			period_bytes = snd_pcm_lib_period_bytes(stream->instance);
+			period_bytes =
+				snd_pcm_lib_period_bytes(stream->instance);
 
 			/* do we have enough data for one period? */
 			if (stream->period_off > period_bytes) {
@@ -355,13 +359,15 @@ static void microbookii_pcm_urb_handler(struct urb *usb_urb)
 
 				spin_unlock_irqrestore(&stream->lock, flags);
 
-				/* call this only once even if multiple periods are ready */
+				/* call this only once even if multiple periods
+				 * are ready */
 				snd_pcm_period_elapsed(stream->instance);
 			} else {
 				spin_unlock_irqrestore(&stream->lock, flags);
 			}
 		}
-		memset(mbii_urb->instance.transfer_buffer, 0, stream->max_packet_size * USB_N_PACKETS_PER_URB);
+		memset(mbii_urb->instance.transfer_buffer, 0,
+		       stream->max_packet_size * USB_N_PACKETS_PER_URB);
 
 		/* reset URB data */
 		for (k = 0; k < USB_N_PACKETS_PER_URB; k++) {
@@ -381,12 +387,13 @@ static void microbookii_pcm_urb_handler(struct urb *usb_urb)
 	return;
 
 out_fail:
-	dev_info(&mbii_urb->mbii->dev->dev, PREFIX "error in urb handler");
+	dev_dbg(&mbii_urb->mbii->dev->dev, PREFIX "Device not available.");
 	pcm->panic = true;
 }
 
 
-static void microbookii_pcm_stream_stop(struct microbookii_pcm *pcm, struct microbookii_substream *stream)
+static void microbookii_pcm_stream_stop(struct microbookii_pcm *pcm,
+					struct microbookii_substream *stream)
 {
 	int i;
 
@@ -412,8 +419,7 @@ static int microbookii_substream_open(struct snd_pcm_substream *substream)
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		stream = &pcm->playback;
 		substream->runtime->hw = pcm->pcm_playback_info;
-	}
-	else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
+	} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 		stream = &pcm->capture;
 		substream->runtime->hw = pcm->pcm_capture_info;
 	}
@@ -441,10 +447,9 @@ static int microbookii_substream_close(struct snd_pcm_substream *substream)
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		stream = &pcm->playback;
 		sync_stream = &pcm->capture;
-	}
-	else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
-		/* only stop capture stream when playback stream is disabled, so feedback
-		sync works */
+	} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
+		/* only stop capture stream when playback stream is disabled, so
+		feedback sync works */
 		if (pcm->playback.state == STREAM_DISABLED) {
 			stream = &pcm->capture;
 		}
@@ -465,8 +470,8 @@ static int microbookii_substream_close(struct snd_pcm_substream *substream)
 		mutex_unlock(&stream->mutex);
 	}
 	
-	/* When sync stream has no instance alsa is not using it as capture stream
-	right now so we stop it now. */
+	/* When sync stream has no instance alsa is not using it as capture
+	stream right now so we stop it now. */
 	if (sync_stream && !sync_stream->instance) {
 		mutex_lock(&sync_stream->mutex);
 		microbookii_pcm_stream_stop(pcm, sync_stream);
@@ -481,7 +486,10 @@ static int microbookii_substream_close(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static int microbookii_substream_urb_buffer_alloc(struct microbookii_substream *stream, unsigned int buffer_size) {
+static int
+microbookii_substream_urb_buffer_alloc(struct microbookii_substream *stream,
+				       unsigned int buffer_size)
+{
 	int i;
 	struct microbookii_urb *urb;
 	
@@ -496,7 +504,8 @@ static int microbookii_substream_urb_buffer_alloc(struct microbookii_substream *
 			urb->instance.transfer_buffer_length = 0;
 		}
 
-		urb->instance.transfer_buffer = kzalloc(buffer_size, GFP_ATOMIC);
+		urb->instance.transfer_buffer =
+			kzalloc(buffer_size, GFP_ATOMIC);
 		if (!urb->instance.transfer_buffer)
 			return -ENOMEM;
 
@@ -520,15 +529,15 @@ static int microbookii_pcm_hw_params(struct snd_pcm_substream *substream,
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		stream = &pcm->playback;
 		sync_stream = &pcm->capture;
-	}
-	else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
+	} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 		stream = &pcm->capture;
 	}
 		
 	if (params_rate(hw_params) >= 88200) {
 		max_frames_per_packet *= 2;
 	}
-	stream->max_packet_size = params_channels(hw_params) * max_frames_per_packet * bytes_per_frame;
+	stream->max_packet_size = params_channels(hw_params)
+				  * max_frames_per_packet * bytes_per_frame;
 	urb_buffer_size = stream->max_packet_size * USB_N_PACKETS_PER_URB;
 	
 	err = microbookii_substream_urb_buffer_alloc(stream, urb_buffer_size);
@@ -536,9 +545,12 @@ static int microbookii_pcm_hw_params(struct snd_pcm_substream *substream,
 		return err;
 	
 	if (sync_stream != NULL) {
-		sync_stream->max_packet_size = 6 * max_frames_per_packet * bytes_per_frame;
-		urb_buffer_size = sync_stream->max_packet_size * USB_N_PACKETS_PER_URB;
-		err = microbookii_substream_urb_buffer_alloc(sync_stream, urb_buffer_size);
+		sync_stream->max_packet_size =
+			6 * max_frames_per_packet * bytes_per_frame;
+		urb_buffer_size =
+			sync_stream->max_packet_size * USB_N_PACKETS_PER_URB;
+		err = microbookii_substream_urb_buffer_alloc(sync_stream,
+							     urb_buffer_size);
 		if (err < 0)
 			return err;
 	}
@@ -552,7 +564,8 @@ static int microbookii_pcm_hw_free(struct snd_pcm_substream *substream)
 	return snd_pcm_lib_free_vmalloc_buffer(substream);
 }
 
-static int microbookii_pcm_stream_start(struct microbookii_pcm *pcm, struct microbookii_substream *stream)
+static int microbookii_pcm_stream_start(struct microbookii_pcm *pcm,
+					struct microbookii_substream *stream)
 {
 	int ret;
 	int i, k;
@@ -572,22 +585,31 @@ static int microbookii_pcm_stream_start(struct microbookii_pcm *pcm, struct micr
 		/* initialize data of each URB */
 		for (i = 0; i < USB_N_URBS; i++) {
 			/* immediately send data with the first audio out URB */
-			if (stream->instance && stream->instance->stream == SNDRV_PCM_STREAM_PLAYBACK) {
-				list_add_tail(&stream->urbs[i].ready_list, &stream->ready_playback_urbs);
+			if (stream->instance
+			    && stream->instance->stream
+				       == SNDRV_PCM_STREAM_PLAYBACK) {
+				list_add_tail(&stream->urbs[i].ready_list,
+					      &stream->ready_playback_urbs);
 			} else {
 				for (k = 0; k < USB_N_PACKETS_PER_URB; k++) {
 					packet = &stream->urbs[i].packets[k];
-					packet->offset = k * stream->max_packet_size;
-					packet->length = stream->max_packet_size;
+					packet->offset =
+						k * stream->max_packet_size;
+					packet->length =
+						stream->max_packet_size;
 					packet->actual_length = 0;
 					packet->status = 0;
 				}
 				
-				ret = usb_submit_urb(&stream->urbs[i].instance, GFP_ATOMIC);
+				ret = usb_submit_urb(&stream->urbs[i].instance,
+						     GFP_ATOMIC);
 				if (ret) {
-					microbookii_pcm_stream_stop(pcm, stream);
-					dev_err(&pcm->mbii->dev->dev, PREFIX
-													"could not submit urb, Error: %i\n", ret);
+					microbookii_pcm_stream_stop(pcm,
+								    stream);
+					dev_err(&pcm->mbii->dev->dev,
+						PREFIX
+						"could not submit urb, Error: %i\n",
+						ret);
 					return ret;
 				}
 			}
@@ -621,8 +643,7 @@ static int microbookii_pcm_prepare(struct snd_pcm_substream *substream)
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		stream = &pcm->playback;
 		sync_stream = &pcm->capture;
-	}
-	else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
+	} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 		stream = &pcm->capture;
 	}
 
@@ -634,14 +655,13 @@ static int microbookii_pcm_prepare(struct snd_pcm_substream *substream)
 		
 	ret = microbookii_set_rate(pcm->mbii, runtime->rate);
 	if (ret < 0) {
-		dev_err(&pcm->mbii->dev->dev, PREFIX
-					"could not set rate\n");
+		dev_err(&pcm->mbii->dev->dev, PREFIX "could not set rate\n");
 		return ret;
 	}
-	ret = microbookii_poll_device_ready(pcm->mbii);
+	ret = microbookii_wait_device_ready(pcm->mbii);
 	if (ret < 0) {
-		dev_err(&pcm->mbii->dev->dev, PREFIX
-					"could not check if device ready\n");
+		dev_err(&pcm->mbii->dev->dev,
+			PREFIX "could not check if device ready\n");
 		return ret;
 	}
 	
@@ -736,7 +756,8 @@ microbookii_pcm_pointer(struct snd_pcm_substream *substream)
 		return SNDRV_PCM_POS_XRUN;
 
 	spin_lock_irqsave(&stream->lock, flags);
-	/* return the number of the last written period in the ALSA ring buffer */
+	/* return the number of the last written period in the ALSA ring buffer
+	 */
 	ret = bytes_to_frames(stream->instance->runtime, stream->dma_off);
 	spin_unlock_irqrestore(&stream->lock, flags);
 
@@ -757,8 +778,8 @@ static struct snd_pcm_ops microbookii_ops = {
 };
 
 static int microbookii_pcm_init_urb(struct microbookii_urb *urb,
-							struct microbookii *mbii,
-							char in, unsigned int ep,
+				    struct microbookii *mbii, char in,
+				    unsigned int ep,
 							void (*handler)(struct urb *))
 {
 	urb->mbii = mbii;
@@ -806,7 +827,8 @@ static void microbookii_pcm_free(struct snd_pcm *pcm)
 		microbookii_pcm_destroy(mbii_pcm->mbii);
 }
 
-int microbookii_init_stream(struct microbookii *mbii,struct microbookii_substream *stream, bool in)
+int microbookii_init_stream(struct microbookii *mbii,
+			    struct microbookii_substream *stream, bool in)
 {
 	int i, ret;
 
@@ -817,12 +839,13 @@ int microbookii_init_stream(struct microbookii *mbii,struct microbookii_substrea
 	
 	INIT_LIST_HEAD(&stream->ready_playback_urbs);
 
-	for (i=0; i<USB_N_URBS; i++) {
-		ret = microbookii_pcm_init_urb(&stream->urbs[i], mbii, in, in? 0x84 : 0x3,
+	for (i = 0; i < USB_N_URBS; i++) {
+		ret = microbookii_pcm_init_urb(&stream->urbs[i], mbii, in,
+					       in ? 0x84 : 0x3,
 							 microbookii_pcm_urb_handler);
 		if (ret) {
-			dev_err(&mbii->dev->dev, PREFIX
-					"%s: urb init failed, ret=%d: ",
+			dev_err(&mbii->dev->dev,
+				PREFIX "%s: urb init failed, ret=%d: ",
 					__func__, ret);
 			return ret;
 		}
@@ -835,7 +858,7 @@ int microbookii_init_stream(struct microbookii *mbii,struct microbookii_substrea
 int microbookii_init_audio(struct microbookii *mbii)
 {
 	int ret;
-	struct microbookii_pcm * pcm;
+	struct microbookii_pcm *pcm;
 
 	pcm = &mbii->pcm;
 	pcm->mbii = mbii;
@@ -848,9 +871,9 @@ int microbookii_init_audio(struct microbookii *mbii)
 
 	ret = snd_pcm_new(mbii->card, DEVICENAME, 0, 1, 1, &pcm->instance);
 	if (ret < 0) {
-		dev_err(&mbii->dev->dev, PREFIX
-			"%s: snd_pcm_new() failed, ret=%d: ",
-			__func__, ret);
+		dev_err(&mbii->dev->dev,
+			PREFIX "%s: snd_pcm_new() failed, ret=%d: ", __func__,
+			ret);
 		return ret;
 	}
 	pcm->instance->private_data = pcm;
@@ -868,8 +891,10 @@ int microbookii_init_audio(struct microbookii *mbii)
 	pcm->pcm_capture_info.channels_min = 6;
 	pcm->pcm_capture_info.channels_max = 6;
 
-	snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_CAPTURE, &microbookii_ops);
-	snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_PLAYBACK, &microbookii_ops);
+	snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_CAPTURE,
+			&microbookii_ops);
+	snd_pcm_set_ops(pcm->instance, SNDRV_PCM_STREAM_PLAYBACK,
+			&microbookii_ops);
 
 	return 0;
 }

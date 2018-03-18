@@ -30,8 +30,8 @@
 #include "control.h"
 
 static struct usb_device_id id_table[] = {
-	{ USB_DEVICE(0x07FD, 0x0004) },
-	{ },
+	{USB_DEVICE(0x07FD, 0x0004)},
+	{},
 };
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
@@ -44,15 +44,14 @@ static struct usb_driver microbookii_driver;
 #ifdef CONFIG_SND_DEBUG
 void microbookii_dump_buffer(const char *prefix, const char *buf, int len)
 {
-	print_hex_dump(KERN_DEBUG, prefix,
-			DUMP_PREFIX_NONE, 16, 1,
-			buf, len, false);
+	print_hex_dump(KERN_DEBUG, prefix, DUMP_PREFIX_NONE, 16, 1, buf, len,
+		       false);
 }
 #else
-void microbookii_dump_buffer(const char *prefix, const char *buf, int len) {
-	print_hex_dump(KERN_ALERT, prefix,
-			DUMP_PREFIX_NONE, 16, 1,
-			buf, len, false);
+void microbookii_dump_buffer(const char *prefix, const char *buf, int len)
+{
+        // print_hex_dump(KERN_INFO, prefix, DUMP_PREFIX_NONE, 16, 1, buf, len,
+		//        false);
 }
 #endif
 
@@ -104,7 +103,7 @@ static int microbookii_probe(struct usb_interface *interface,
 		return -ENOENT;
 	}
 
-	#if LINUX_VERSION_CODE < KERNEL_VERSION(3,15,0)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
 	err = snd_card_create(index[card_index], id[card_index], THIS_MODULE,
 			sizeof(*mbii), &card);
 	#else
@@ -128,8 +127,7 @@ static int microbookii_probe(struct usb_interface *interface,
 	strncpy(card->shortname, DEVICENAME, sizeof(card->shortname));
 	usb_make_path(mbii->dev, usb_path, sizeof(usb_path));
 	snprintf(mbii->card->longname, sizeof(mbii->card->longname),
-			"MOTU " DEVICENAME " at %s",
-			usb_path);
+		 "MOTU " DEVICENAME " at %s", usb_path);
 			
 	/* set alternate configuration */
 	err = usb_set_interface(mbii->dev, 0, 1);
@@ -170,10 +168,10 @@ probe_error:
 }
 
 static struct usb_driver microbookii_driver = {
-	.name =		"snd-microbookii",
-	.probe =	microbookii_probe,
-	.disconnect =	microbookii_disconnect,
-	.id_table =	id_table,
+	.name = "snd-microbookii",
+	.probe = microbookii_probe,
+	.disconnect = microbookii_disconnect,
+	.id_table = id_table,
 };
 
 module_usb_driver(microbookii_driver);
