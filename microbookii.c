@@ -63,7 +63,7 @@ static void microbookii_disconnect(struct usb_interface *interface)
 		return;
 
 	mutex_lock(&devices_mutex);
-	
+
 	/* make sure that userspace cannot create new requests */
 	snd_card_disconnect(mbii->card);
 
@@ -83,14 +83,14 @@ static void microbookii_disconnect(struct usb_interface *interface)
 }
 
 static int microbookii_probe(struct usb_interface *interface,
-				const struct usb_device_id *usb_id)
+			     const struct usb_device_id *usb_id)
 {
 	struct snd_card *card;
 	struct microbookii *mbii;
 	unsigned int card_index;
 	char usb_path[32];
 	int err;
-	
+
 
 	mutex_lock(&devices_mutex);
 
@@ -105,11 +105,11 @@ static int microbookii_probe(struct usb_interface *interface,
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 15, 0)
 	err = snd_card_create(index[card_index], id[card_index], THIS_MODULE,
-			sizeof(*mbii), &card);
-	#else
+			      sizeof(*mbii), &card);
+#else
 	err = snd_card_new(&interface->dev, index[card_index], id[card_index],
-			THIS_MODULE, sizeof(*mbii), &card);
-	#endif
+			   THIS_MODULE, sizeof(*mbii), &card);
+#endif
 	if (err < 0) {
 		mutex_unlock(&devices_mutex);
 		return err;
@@ -128,7 +128,7 @@ static int microbookii_probe(struct usb_interface *interface,
 	usb_make_path(mbii->dev, usb_path, sizeof(usb_path));
 	snprintf(mbii->card->longname, sizeof(mbii->card->longname),
 		 "MOTU " DEVICENAME " at %s", usb_path);
-			
+
 	/* set alternate configuration */
 	err = usb_set_interface(mbii->dev, 0, 1);
 	if (err < 0)
@@ -138,7 +138,7 @@ static int microbookii_probe(struct usb_interface *interface,
 	if (err < 0) {
 		goto probe_error;
 	}
-	
+
 	err = microbookii_init_control(mbii);
 	if (err < 0) {
 		microbookii_free_audio(mbii);
@@ -151,7 +151,7 @@ static int microbookii_probe(struct usb_interface *interface,
 		microbookii_free_control(mbii);
 		goto probe_error;
 	}
-	
+
 	usb_set_intfdata(interface, mbii);
 	set_bit(card_index, devices_used);
 

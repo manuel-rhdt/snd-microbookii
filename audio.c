@@ -137,6 +137,7 @@ static void microbookii_prepare_outbound_urb(struct microbookii_urb *urb) {
 	unsigned int period_bytes;
 	
 	struct microbookii_substream *stream = urb->stream;
+	struct snd_pcm_runtime *runtime = stream->instance->runtime;
 
 	spin_lock_irqsave(&stream->lock, flags);
 
@@ -145,9 +146,16 @@ static void microbookii_prepare_outbound_urb(struct microbookii_urb *urb) {
 	/* fill URB with data from ALSA */
 	microbookii_pcm_playback(stream, urb);
 
-	period_bytes = snd_pcm_lib_period_bytes(stream->instance);
+	if (stream->trigger_tstamp_pending_update) {
+		/* this is the first actual URB submitted,
+		 * update trigger timestamp to reflect actual start time
+		 */
+		snd_pcm_gettime(runtime, &runtime->trigger_tstamp);
+		stream->trigger_tstamp_pending_update = false;
+	}
 
 	/* check if a complete period was written into the URB */
+	period_bytes = snd_pcm_lib_period_bytes(stream->instance);
 	if (stream->period_off > period_bytes) {
 		stream->period_off %= period_bytes;
 
@@ -716,6 +724,9 @@ static int microbookii_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 
 	switch (cmd) {
 		case SNDRV_PCM_TRIGGER_START:
+		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+			stream->trigger_tstamp_pending_update = true;
+		}
 		case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 			spin_lock_irqsave(&stream->lock, flags);
 			stream->active = true;
