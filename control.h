@@ -1,8 +1,8 @@
 #ifndef __MICROBOOKII_CONTROL_H
 #define __MICROBOOKII_CONTROL_H
 
-#define MSG_BUF_LEN 64
-#define MICROBOOKII_POll_MS 100
+#define MSG_BUF_LEN 40
+#define MICROBOOKII_POll_MS 130
 
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
