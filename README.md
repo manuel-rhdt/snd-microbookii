@@ -1,6 +1,8 @@
 snd-microbookii
 ===============
 
+**NOTE: Starting with linux kernel 5.1 most of the functionality of this module is included in the kernel itself.**
+
 Linux driver for the Motu Microbook II.
 
 Usage:
